@@ -75,7 +75,7 @@ class FewShotMemory(MemorySystem):
 
         parts = []
         total_chars = 0
-        for i, ex in enumerate(to_use, 1):
+        for ex in to_use:
             # Use raw_question for demos (avoids repeating task context per example)
             question = ex.get("raw_question", ex["input"])
             part = f"Q: {question}\nA: {ex['target']}"

@@ -90,14 +90,12 @@ BASELINES = [
     ("terminus2-baseline", "agents.baseline_terminus2:AgentHarness"),
 ]
 BASELINE_AGENT_NAME = BASELINES[0][0]  # primary baseline for frontier comparison
-BASELINE_IMPORT_PATH = BASELINES[0][1]
 
 EVAL_TASK_SET = "full"
 N_EVAL_TASKS = 89  # full official TB2 dataset used in the paper runs
 
 SMOKE_TEST_TASK = "extract-elf"  # simple task, reliably fast
 
-DATASET = "terminal-bench@2.0"
 MODEL = "anthropic/claude-opus-4-6"
 DEFAULT_SEARCH_TRIALS = 2
 DEFAULT_CONCURRENCY = 50
@@ -370,10 +368,9 @@ def count_iterations():
     return max_iter
 
 
-def update_frontier(candidates_results, metrics=None):
+def update_frontier(candidates_results):
     """Update frontier_val.json with best agent per task and overall best."""
     frontier = json.loads(FRONTIER_VAL.read_text()) if FRONTIER_VAL.exists() else {}
-    metrics = metrics or {}
 
     for agent_name, (per_task, avg) in candidates_results.items():
         for task, rate in per_task.items():
@@ -833,7 +830,7 @@ def run_evolve(args):
 
         bench_time = time.time() - bench_start
 
-        update_frontier(results, metrics=all_metrics)
+        update_frontier(results)
         update_evolution_summary(
             iteration,
             valid,

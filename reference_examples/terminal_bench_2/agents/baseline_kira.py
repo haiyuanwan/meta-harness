@@ -224,7 +224,6 @@ class AgentHarness(Terminus2):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self._marker_seq = 0
-        self._total_time_saved = 0.0
 
     async def _with_block_timeout(self, coro, timeout_sec: int = BLOCK_TIMEOUT_SEC):
         """Wrap coroutine with block detection timeout."""
@@ -272,7 +271,6 @@ class AgentHarness(Terminus2):
 
             saved = command.duration_sec - (time.monotonic() - start)
             if saved > 0.1:
-                self._total_time_saved += saved
                 self.logger.debug(
                     f"[polling] saved {saved:.1f}s "
                     f"(duration={command.duration_sec:.1f}s) "
@@ -502,7 +500,6 @@ class AgentHarness(Terminus2):
         self,
         image_read: ImageReadRequest,
         chat: Chat,
-        original_instruction: str = "",
     ) -> str:
         """Execute a file read command to analyze an image file.
 
@@ -1022,9 +1019,7 @@ class AgentHarness(Terminus2):
 
             if image_read is not None:
                 # File read path
-                image_read_result = await self._execute_image_read(
-                    image_read, chat, original_instruction
-                )
+                image_read_result = await self._execute_image_read(image_read, chat)
 
                 # Capture pending state before modifying
                 was_pending_completion = self._pending_completion
@@ -1109,7 +1104,7 @@ class AgentHarness(Terminus2):
                 prompt = observation
             else:
                 # Commands path (existing behavior)
-                timeout_occurred, terminal_output = await self._with_block_timeout(
+                _, terminal_output = await self._with_block_timeout(
                     self._execute_commands(
                         commands,
                         self._session,

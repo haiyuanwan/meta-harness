@@ -27,11 +27,6 @@ def get_model_short_name(model_id: str) -> str:
 _CONFIG = load_config()
 DATASETS = _CONFIG["datasets"]
 MODELS = _CONFIG["models"]  # List of {model, api_base} dicts
-BASELINE_NAMES = _CONFIG["memory_systems"]["baselines"]
-PROPOSED_NAMES = _CONFIG["memory_systems"]["proposed"]
-MEMORY_SYSTEMS = [(n, f"agents/{n}.py") for n in BASELINE_NAMES] + [
-    (n, f"agents/{n}.py") for n in PROPOSED_NAMES
-]
 SEEDS = _CONFIG["benchmark"]["seeds"]
 CONCURRENCY = _CONFIG["benchmark"]["concurrency"]
 _DS_DEFAULTS = {k: _CONFIG["dataset"][k] for k in ("num_train", "num_val", "num_test")}
@@ -322,12 +317,7 @@ def print_results(results: dict, metric_label: str = "val", pareto_only: bool = 
 
     memory_names = sorted(set(mem for _, _, mem in results.keys()))
 
-    ds_short = {
-        "word_sorting": "word_sort",
-        "MathEquationBalancer": "MathEqn",
-        "bbh/causal_judgement": "bbh/caus",
-        "Symptom2Disease": "Symptom",
-    }
+    ds_short = {"Symptom2Disease": "Symptom"}
 
     models_in_results = sorted(set(m for m, _, _ in results.keys()))
     target_models = [get_model_short_name(m["model"]) for m in MODELS]
@@ -546,7 +536,6 @@ def build_test_runs(
     datasets: list[str],
     models: list[dict],
     mode: str = "online",
-    num_epochs: int = 1,
     temperature: float | None = None,
 ) -> tuple[list[tuple[str, list[str]]], int, int]:
     """Build (description, command) pairs for test runs that need to run."""
@@ -901,7 +890,6 @@ async def main():
             datasets,
             MODELS,
             args.mode,
-            args.num_epochs,
             args.temperature,
         )
     else:
