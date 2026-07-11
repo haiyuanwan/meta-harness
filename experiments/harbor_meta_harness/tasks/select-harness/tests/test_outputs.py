@@ -7,12 +7,17 @@ def main() -> None:
         report = json.loads(Path("/app/evaluation_history.json").read_text())
         history = report["history"]
         rewards = [
-            entry["target"]["reward"] for entry in history if entry.get("target")
+            float(entry["reward"])
+            for entry in history
+            if entry.get("accepted") and entry.get("reward") is not None
         ]
-        valid = report["budget"] == 4 and report["remaining_budget"] == 4 - len(history)
-        reward = max(rewards, default=0) if valid else 0
-    except (FileNotFoundError, KeyError, TypeError, json.JSONDecodeError):
-        reward = 0
+        valid = (
+            report["remaining_budget"] == report["budget"] - len(history)
+            and report["budget"] >= 1
+        )
+        reward = max(rewards, default=0.0) if valid else 0.0
+    except (FileNotFoundError, KeyError, TypeError, ValueError, json.JSONDecodeError):
+        reward = 0.0
     Path("/logs/verifier/reward.txt").write_text(f"{reward}\n")
 
 

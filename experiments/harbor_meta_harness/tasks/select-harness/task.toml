@@ -7,10 +7,10 @@ authors = []
 keywords = ["meta-harness", "orchestration"]
 
 [verifier]
-timeout_sec = 1800.0
+timeout_sec = 14400.0
 
 [agent]
-timeout_sec = 1800.0
+timeout_sec = 14400.0
 
 [environment]
 build_timeout_sec = 300.0

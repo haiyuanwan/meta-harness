@@ -1,10 +1,10 @@
 schema_version = "1.1"
 
 [task]
-name = "meta-harness/reconcile-ledger"
-description = "Reconcile a small invoice ledger into an exact JSON report."
+name = "meta-harness/budget-rollups"
+description = "Roll up approved spend by cost center into a sorted JSON object."
 authors = []
-keywords = ["json", "data-processing"]
+keywords = ["csv", "aggregation"]
 
 [verifier]
 timeout_sec = 120.0
@@ -22,7 +22,7 @@ allow_internet = false
 
 [meta_harness]
 forbidden_references = [
-  "reconcile-ledger",
-  "ledger.jsonl",
-  "report.json",
+  "budget-rollups",
+  "spend.csv",
+  "rollups.json",
 ]

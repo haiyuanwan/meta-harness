@@ -1,7 +1,7 @@
 """Editable starting point for the Meta-Harness task.
 
-Intentionally underpowered: one model turn clears smoke, but not the
-hidden scored task under the child model. More turns plus inspect/validate
+Intentionally underpowered: one model turn is not enough for the hidden
+scored task under the child model. More turns plus inspect/validate
 prompting is enough to clear that target.
 """
 

@@ -1,0 +1,13 @@
+txn_id,cost_center,state,amount_cents
+t1,ops,approved,400
+t2,ops,approved,125
+t3,ops,rejected,900
+t4,research,approved,250
+t5,research,pending,80
+t6,research,approved,50
+t7,growth,approved,300
+t8,growth,approved,20
+t9,growth,void,15
+t10,ops,approved,30
+t11,legal,rejected,500
+t12,legal,approved,75

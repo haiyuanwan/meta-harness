@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -12,13 +13,26 @@ from harbor.environments.base import BaseEnvironment
 from harbor.models.agent.context import AgentContext
 from litellm import acompletion
 
+import controller
+
 ROOT = Path(__file__).parents[1]
-MAX_EVALUATIONS = 4
+
+
+def active_suite_path() -> Path:
+    configured = os.environ.get("META_HARNESS_SUITE")
+    if configured:
+        path = Path(configured)
+        return path if path.is_absolute() else (ROOT / path)
+    return controller.DEFAULT_SUITE
+
+
+SUITE_PATH = active_suite_path()
+SUITE = controller.load_suite(SUITE_PATH)
 
 
 @dataclass(frozen=True)
 class EvaluationState:
-    remaining: int = MAX_EVALUATIONS
+    remaining: int
     history: tuple[dict[str, Any], ...] = ()
 
     def record(self, result: dict[str, Any]) -> "EvaluationState":
@@ -31,7 +45,7 @@ class AgentHarness(BaseAgent):
         return "meta-harness"
 
     def version(self) -> str | None:
-        return "0.2.0"
+        return "0.4.0"
 
     async def setup(self, environment: BaseEnvironment) -> None:
         return None
@@ -56,6 +70,8 @@ class AgentHarness(BaseAgent):
             str(self.logs_dir / "inner-jobs" / str(len(state.history) + 1)),
             "--result",
             str(result_path),
+            "--suite",
+            str(SUITE_PATH),
             cwd=ROOT,
         )
         return_code = await process.wait()
@@ -68,10 +84,9 @@ class AgentHarness(BaseAgent):
             result = json.loads(result_path.read_text())
         next_state = state.record(result)
         response = {
-            "reward": (result.get("target") or {}).get("reward", 0.0),
-            "verifier_summary": (result.get("target") or result.get("smoke") or {}).get(
-                "summary", result.get("reason")
-            ),
+            "reward": result.get("reward", 0.0) or 0.0,
+            "tasks": result.get("tasks") or [],
+            "verifier_summary": result.get("reason"),
             "remaining_budget": next_state.remaining,
         }
         return next_state, response
@@ -82,15 +97,18 @@ class AgentHarness(BaseAgent):
         environment: BaseEnvironment,
         context: AgentContext,
     ) -> None:
-        state = EvaluationState()
+        state = EvaluationState(remaining=SUITE.eval_budget)
+        max_turns = max(24, SUITE.eval_budget * 3)
         messages: list[dict[str, Any]] = [
             {
                 "role": "system",
                 "content": (
                     "Improve /app/harness.py as a general Harbor BaseAgent harness. "
                     "Use the terminal to inspect and edit it. evaluate_harness is scarce: "
-                    "each call smoke-tests then scores the current file. Do not put benchmark, "
-                    "test, verifier, solution, or target-data references in the harness."
+                    "each call validates then scores the current file on a hidden task suite. "
+                    "Prefer more turns, inspect/validate prompting, and local checks. "
+                    "Do not put benchmark, test, verifier, solution, or target-data "
+                    "references in the harness."
                 ),
             },
             {"role": "user", "content": instruction},
@@ -112,12 +130,15 @@ class AgentHarness(BaseAgent):
                 "type": "function",
                 "function": {
                     "name": "evaluate_harness",
-                    "description": "Smoke-test then score the current /app/harness.py. Maximum four calls.",
+                    "description": (
+                        "Validate and score the current /app/harness.py on the configured "
+                        f"task suite. Maximum {SUITE.eval_budget} calls."
+                    ),
                     "parameters": {"type": "object", "properties": {}},
                 },
             },
         ]
-        for _ in range(12):
+        for _ in range(max_turns):
             response = await acompletion(
                 model=self.model_name,
                 messages=messages,
@@ -155,9 +176,10 @@ class AgentHarness(BaseAgent):
                     }
                 )
         report = {
-            "budget": MAX_EVALUATIONS,
+            "budget": SUITE.eval_budget,
             "remaining_budget": state.remaining,
             "history": list(state.history),
+            "suite": str(SUITE_PATH),
         }
         report_path = self.logs_dir / "evaluation_history.json"
         report_path.write_text(json.dumps(report, indent=2) + "\n")
