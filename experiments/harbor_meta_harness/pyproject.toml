@@ -1,0 +1,23 @@
+[project]
+name = "harbor-meta-harness-spike"
+version = "0.1.0"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+  "harbor[modal]==0.18.0",
+  "litellm>=1.83.14",
+]
+
+[dependency-groups]
+dev = ["pytest>=8.0"]
+
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["agents"]
+py-modules = ["controller"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
