@@ -663,7 +663,6 @@ class AgentHarness(Terminus2):
         self,
         chat: Chat,
         prompt: str,
-        logging_paths: tuple[Path | None, Path | None, Path | None],
         original_instruction: str = "",
         session: TmuxSession | None = None,
     ) -> tuple[
@@ -674,11 +673,6 @@ class AgentHarness(Terminus2):
         This overrides the parent's _handle_llm_interaction to use native tools
         instead of JSON/XML parsing.
         """
-        _, prompt_path, response_path = logging_paths
-
-        if prompt_path is not None:
-            prompt_path.write_text(prompt)
-
         # Build messages from chat history + new prompt
         messages = chat.messages.copy()
         messages.append({"role": "user", "content": prompt})
@@ -836,14 +830,6 @@ class AgentHarness(Terminus2):
                 chat._cumulative_cache_tokens += tool_response.usage.cache_tokens
                 chat._cumulative_cost += tool_response.usage.cost_usd
 
-        # Log response
-        if response_path is not None:
-            response_text = (
-                f"Content: {tool_response.content or ''}\n\n"
-                f"Tool Calls: {json.dumps(tool_response.tool_calls, indent=2)}"
-            )
-            response_path.write_text(response_text)
-
         # Parse tool calls into commands
         commands, is_task_complete, feedback, analysis, plan, image_read = (
             self._parse_tool_calls(tool_response.tool_calls)
@@ -870,9 +856,8 @@ class AgentHarness(Terminus2):
         self,
         initial_prompt: str,
         chat: Chat,
-        logging_dir: Path | None = None,
         original_instruction: str = "",
-    ) -> int:
+    ) -> None:
         """Run the agent loop with support for image_read tool."""
         if self._context is None:
             raise RuntimeError("Agent context is not set. This should never happen.")
@@ -891,7 +876,7 @@ class AgentHarness(Terminus2):
             self._n_episodes = episode + 1
             if not await self._with_block_timeout(self._session.is_session_alive()):
                 self.logger.debug("Session has ended, breaking out of agent loop")
-                return episode + 1
+                return
 
             if original_instruction and self._enable_summarize:
                 proactive_summary_result = await self._with_block_timeout(
@@ -905,8 +890,6 @@ class AgentHarness(Terminus2):
                     prompt, subagent_refs = proactive_summary_result
                     self._pending_subagent_refs = subagent_refs
                     self._pending_handoff_prompt = prompt
-
-            logging_paths = self._setup_episode_logging(logging_dir, episode)
 
             # Track token counts and cost before this step
             tokens_before_input = chat.total_input_tokens
@@ -923,7 +906,7 @@ class AgentHarness(Terminus2):
                 llm_response,
                 image_read,
             ) = await self._handle_llm_interaction(
-                chat, prompt, logging_paths, original_instruction, self._session
+                chat, prompt, original_instruction, self._session
             )
 
             # If we have pending subagent refs, add a system step
@@ -976,11 +959,6 @@ class AgentHarness(Terminus2):
             self._context.n_output_tokens = chat.total_output_tokens
             self._context.n_cache_tokens = chat.total_cache_tokens
             self._context.cost_usd = chat.total_cost if chat.total_cost > 0 else None
-
-            self._record_asciinema_marker(
-                f"Episode {episode}: {len(commands)} commands"
-                + (" (image_read)" if image_read else ""),
-            )
 
             if feedback and "ERROR:" in feedback:
                 prompt = (
@@ -1099,7 +1077,7 @@ class AgentHarness(Terminus2):
                 self._dump_trajectory()
 
                 if is_task_complete and was_pending_completion:
-                    return episode + 1
+                    return
 
                 prompt = observation
             else:
@@ -1202,8 +1180,6 @@ class AgentHarness(Terminus2):
                 self._dump_trajectory()
 
                 if is_task_complete and was_pending_completion:
-                    return episode + 1
+                    return
 
                 prompt = observation
-
-        return self._n_episodes

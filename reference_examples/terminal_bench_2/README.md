@@ -24,6 +24,12 @@ uv run bash scripts/run_eval.sh agents.baseline_kira:AgentHarness full 1 1 -i ex
 ```
 
 `run_eval.sh` first verifies that the exact imported object exists, is a class, and subclasses Harbor's `Terminus2`.
+It defaults to Runloop. Use the same entrypoint with Modal by setting:
+
+```bash
+HARBOR_ENVIRONMENT=modal uv run bash scripts/run_eval.sh \
+  agents.baseline_kira:AgentHarness full 1 1 -i extract-elf
+```
 
 When trying a new idea, validate it on the cheaper 30-task `hard` subset before paying for a full default search:
 
@@ -42,6 +48,7 @@ Pass `--full-eval` if you also want the optional 5-trial winner pass on the full
 ## Repro And Troubleshooting
 
 - The shipped `runloop` path requires both `ANTHROPIC_API_KEY` and `RUNLOOP_API_KEY`.
+- The Modal path requires `modal token new` or `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET`.
 - The default paper-style config in this release is Opus 4.6, `full`, `89` tasks, `2` search trials, and concurrency `50`.
 - Anthropic API tier matters for both speed and failure rate.
 - Sharing the same Anthropic API key with other active projects can make runs substantially slower.

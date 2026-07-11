@@ -5,9 +5,14 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
+from unittest.mock import AsyncMock
 
 import meta_harness
+from agents.baseline_kira import AgentHarness
+from harbor.llms.base import LLMResponse
+from harbor.models.agent.context import AgentContext
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -49,6 +54,51 @@ class AgentClassValidationTests(unittest.TestCase):
 
 
 class TimeoutWiringTests(unittest.TestCase):
+    def _run_shell(
+        self, harbor_environment: str | None = None
+    ) -> tuple[list[str], str]:
+        with tempfile.TemporaryDirectory() as tmp:
+            tmp_path = Path(tmp)
+            capture = tmp_path / "timeout-args"
+            capture_pythonpath = tmp_path / "pythonpath"
+            fake_timeout = tmp_path / "timeout"
+            fake_timeout.write_text(
+                '#!/usr/bin/env bash\nprintf "%s\\n" "$@" > "$CAPTURE"\n'
+                'printf "%s" "$PYTHONPATH" > "$CAPTURE_PYTHONPATH"\n'
+            )
+            fake_timeout.chmod(0o755)
+            env = os.environ.copy()
+            env.pop("HARBOR_ENVIRONMENT", None)
+            env.pop("PYTHONPATH", None)
+            env.update(
+                {
+                    "CAPTURE": str(capture),
+                    "CAPTURE_PYTHONPATH": str(capture_pythonpath),
+                    "HARBOR_TIMEOUT_SECONDS": "12345",
+                    "PATH": f"{tmp_path}:{env['PATH']}",
+                }
+            )
+            if harbor_environment:
+                env["HARBOR_ENVIRONMENT"] = harbor_environment
+
+            result = subprocess.run(
+                [
+                    str(RUN_EVAL),
+                    "agents.baseline_kira:AgentHarness",
+                    "full",
+                    "1",
+                    "1",
+                ],
+                cwd=ROOT,
+                env=env,
+                capture_output=True,
+                text=True,
+                timeout=60,
+            )
+
+            self.assertEqual(result.returncode, 0, result.stderr)
+            return capture.read_text().splitlines(), capture_pythonpath.read_text()
+
     def test_python_runner_uses_harbor_timeout(self) -> None:
         completed = subprocess.CompletedProcess([], 0, "", "")
         with (
@@ -75,44 +125,66 @@ class TimeoutWiringTests(unittest.TestCase):
         self.assertIsNone(result)
 
     def test_shell_runner_uses_harbor_timeout(self) -> None:
+        timeout_args, pythonpath = self._run_shell()
+
+        self.assertEqual(
+            timeout_args[:3], ["--signal=TERM", "--kill-after=60", "12345"]
+        )
+        self.assertEqual(timeout_args[3:6], ["uv", "run", "harbor"])
+        agent_flag = timeout_args.index("--agent")
+        self.assertEqual(
+            timeout_args[agent_flag + 1], "agents.baseline_kira:AgentHarness"
+        )
+        environment_flag = timeout_args.index("-e")
+        self.assertEqual(timeout_args[environment_flag + 1], "runloop")
+        self.assertIn("temperature=0.7", timeout_args)
+        self.assertEqual(Path(pythonpath.split(os.pathsep)[0]), ROOT)
+
+    def test_shell_runner_supports_modal(self) -> None:
+        timeout_args, _ = self._run_shell("modal")
+
+        environment_flag = timeout_args.index("-e")
+        self.assertEqual(timeout_args[environment_flag + 1], "modal")
+
+
+class KiraCompatibilityTests(unittest.IsolatedAsyncioTestCase):
+    async def test_one_episode_runs_with_current_harbor(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
-            tmp_path = Path(tmp)
-            capture = tmp_path / "timeout-args"
-            fake_timeout = tmp_path / "timeout"
-            fake_timeout.write_text(
-                '#!/usr/bin/env bash\nprintf "%s\\n" "$@" > "$CAPTURE"\n'
+            agent = AgentHarness(
+                logs_dir=Path(tmp),
+                model_name="openai/gpt-4o-mini",
+                max_turns=1,
+                enable_summarize=False,
+                suppress_max_turns_warning=True,
             )
-            fake_timeout.chmod(0o755)
-            env = os.environ.copy()
-            env.update(
-                {
-                    "CAPTURE": str(capture),
-                    "HARBOR_TIMEOUT_SECONDS": "12345",
-                    "PATH": f"{tmp_path}:{env['PATH']}",
-                }
+            agent._context = AgentContext()
+            agent._session = SimpleNamespace(
+                is_session_alive=AsyncMock(return_value=True)
             )
+            chat = SimpleNamespace(
+                total_input_tokens=0,
+                total_output_tokens=0,
+                total_cache_tokens=0,
+                total_cost=0,
+            )
+            agent._handle_llm_interaction = AsyncMock(
+                return_value=(
+                    [],
+                    False,
+                    "",
+                    "",
+                    "",
+                    LLMResponse(content=""),
+                    None,
+                )
+            )
+            agent._execute_commands = AsyncMock(return_value=(False, ""))
+            agent._dump_trajectory = mock.Mock()
 
-            result = subprocess.run(
-                [
-                    str(RUN_EVAL),
-                    "agents.baseline_kira:AgentHarness",
-                    "full",
-                    "1",
-                    "1",
-                ],
-                cwd=ROOT,
-                env=env,
-                capture_output=True,
-                text=True,
-                timeout=60,
-            )
+            await agent._run_agent_loop("task", chat, original_instruction="task")
 
-            self.assertEqual(result.returncode, 0, result.stderr)
-            timeout_args = capture.read_text().splitlines()
-            self.assertEqual(
-                timeout_args[:3], ["--signal=TERM", "--kill-after=60", "12345"]
-            )
-            self.assertEqual(timeout_args[3:6], ["uv", "run", "harbor"])
+            self.assertEqual(agent._n_episodes, 1)
+            self.assertEqual(len(agent._trajectory_steps), 1)
 
 
 if __name__ == "__main__":

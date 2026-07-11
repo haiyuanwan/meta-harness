@@ -156,7 +156,7 @@ def validate_agent_class(import_path):
 
 
 def harbor_run(import_path, job_name, n_trials=2, n_concurrent=10):
-    """Run harbor eval on the paper TB2 config via runloop.
+    """Run Harbor on the paper TB2 config using the selected environment.
 
     result_dict is None if harbor crashed hard; job_dir may still have partial results.
     """
