@@ -22,6 +22,9 @@ if [[ -f "$REPO_DIR/.env" ]]; then
 fi
 
 MODEL="${HARBOR_MODEL:-anthropic/claude-opus-4-6}"
+HARBOR_TIMEOUT_SECONDS="${HARBOR_TIMEOUT_SECONDS:-28800}"
+
+uv run python "$REPO_DIR/meta_harness.py" --validate-agent "$AGENT_IMPORT_PATH"
 
 # 30-task hard subset for cheaper development and debugging loops.
 HARD_TASKS=(
@@ -51,14 +54,15 @@ echo "task_set:    $TASK_SET"
 echo "model:       $MODEL"
 echo "concurrent:  $N_CONCURRENT"
 echo "runs:        $RUNS"
+echo "timeout:     ${HARBOR_TIMEOUT_SECONDS}s"
 echo ""
 
 # Prefer an outer wall-clock timeout when GNU timeout is available.
 TIMEOUT_CMD=()
 if command -v timeout >/dev/null 2>&1; then
-    TIMEOUT_CMD=(timeout --signal=TERM --kill-after=60 2h)
+    TIMEOUT_CMD=(timeout --signal=TERM --kill-after=60 "$HARBOR_TIMEOUT_SECONDS")
 elif command -v gtimeout >/dev/null 2>&1; then
-    TIMEOUT_CMD=(gtimeout --signal=TERM --kill-after=60 2h)
+    TIMEOUT_CMD=(gtimeout --signal=TERM --kill-after=60 "$HARBOR_TIMEOUT_SECONDS")
 fi
 
 CMD=(

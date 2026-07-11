@@ -50,7 +50,7 @@ def _with_context(examples: list[dict]) -> list[dict]:
         text = example["input"]
         if example.get("context"):
             text = f"{example['context']}\n\n{text}"
-        result.append({"input": text, "target": example["target"]})
+        result.append({**example, "input": text})
     return result
 
 

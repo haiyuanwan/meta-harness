@@ -60,7 +60,14 @@ Hard-subset example:
 uv run bash scripts/run_eval.sh agents.baseline_kira:AgentHarness hard 1 50
 ```
 
-The shell wrappers use `timeout` when available and fall back to `gtimeout` if GNU coreutils is installed on macOS. If neither command is present, the Harbor run still works but has no outer wall-clock timeout.
+The shell wrappers use `timeout` when available and fall back to `gtimeout` if GNU coreutils is installed on macOS. If neither command is present, the Harbor run still works but has no shell-level wall-clock timeout. `HARBOR_TIMEOUT_SECONDS` controls both the Python and shell layers and defaults to 28800 seconds (8 hours).
+
+Provider-free checks, runnable independently:
+
+```bash
+uv run python -m unittest -v tests.test_meta_harness.AgentClassValidationTests
+uv run python -m unittest -v tests.test_meta_harness.TimeoutWiringTests
+```
 
 ## Local Vs Remote Sandbox
 
