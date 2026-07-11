@@ -11,8 +11,8 @@ DATASETS = ROOT / "datasets"
 SUITES = ROOT / "suites"
 UNIVERSAL = ("/tests", "test_outputs", "verifier", "/solution", "task.toml")
 
-# Suites with a measured weak→strong gap under openai/gpt-5.4-nano.
-# Inactive collections (tb2-sample, legacy-bench, compilebench) showed no useful gap.
+# Suites probed with openai/gpt-5.4-nano.
+# tb2-sample, legacy-bench, and compilebench did not improve in probes.
 COLLECTIONS: dict[str, dict] = {
     "tb2-easy": {
         "tasks": [
@@ -26,11 +26,18 @@ COLLECTIONS: dict[str, dict] = {
         "comment": "Active optimization suite: TB2 Easy (probe gap 0.0 -> 0.5).",
     },
     "humanevalfix-lite": {
-        "tasks": sorted(
-            f"datasets/humanevalfix/{path.name}"
-            for path in (DATASETS / "humanevalfix").iterdir()
-            if path.is_dir() and (path / "task.toml").exists()
-        )[:10],
+        "tasks": [
+            "datasets/humanevalfix/python-0",
+            "datasets/humanevalfix/python-1",
+            "datasets/humanevalfix/python-10",
+            "datasets/humanevalfix/python-100",
+            "datasets/humanevalfix/python-101",
+            "datasets/humanevalfix/python-102",
+            "datasets/humanevalfix/python-103",
+            "datasets/humanevalfix/python-104",
+            "datasets/humanevalfix/python-105",
+            "datasets/humanevalfix/python-106",
+        ],
         "eval_budget": 8,
         "comment": "Active optimization suite: HumanEvalFix lite (probe gap 0.0 -> 0.7).",
     },

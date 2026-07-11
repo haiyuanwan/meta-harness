@@ -392,7 +392,10 @@ def run_evolve(args):
         finalize_run(baselines, datasets, model_short)
         return
 
-    if FINALIZED.exists():
+    if (
+        FINALIZED.exists()
+        and json.loads(FINALIZED.read_text()).get("status") == "complete"
+    ):
         print(
             f"ERROR: run '{run_name}' is finalized; use a new --run-name to continue evolution"
         )

@@ -55,20 +55,32 @@ class AgentClassValidationTests(unittest.TestCase):
 
 class TimeoutWiringTests(unittest.TestCase):
     def _run_shell(
-        self, harbor_environment: str | None = None
+        self,
+        harbor_environment: str | None = None,
+        external_timeout: bool = False,
     ) -> tuple[list[str], str]:
         with tempfile.TemporaryDirectory() as tmp:
             tmp_path = Path(tmp)
             capture = tmp_path / "timeout-args"
             capture_pythonpath = tmp_path / "pythonpath"
             fake_timeout = tmp_path / "timeout"
+            fake_uv = tmp_path / "uv"
             fake_timeout.write_text(
                 '#!/usr/bin/env bash\nprintf "%s\\n" "$@" > "$CAPTURE"\n'
                 'printf "%s" "$PYTHONPATH" > "$CAPTURE_PYTHONPATH"\n'
             )
             fake_timeout.chmod(0o755)
+            fake_uv.write_text(
+                "#!/usr/bin/env bash\n"
+                'if [[ "$*" == *"harbor run"* ]]; then\n'
+                '  printf "%s\\n" "$@" > "$CAPTURE"\n'
+                '  printf "%s" "$PYTHONPATH" > "$CAPTURE_PYTHONPATH"\n'
+                "fi\n"
+            )
+            fake_uv.chmod(0o755)
             env = os.environ.copy()
             env.pop("HARBOR_ENVIRONMENT", None)
+            env.pop("HARBOR_EXTERNAL_TIMEOUT", None)
             env.pop("PYTHONPATH", None)
             env.update(
                 {
@@ -80,6 +92,8 @@ class TimeoutWiringTests(unittest.TestCase):
             )
             if harbor_environment:
                 env["HARBOR_ENVIRONMENT"] = harbor_environment
+            if external_timeout:
+                env["HARBOR_EXTERNAL_TIMEOUT"] = "1"
 
             result = subprocess.run(
                 [
@@ -114,6 +128,7 @@ class TimeoutWiringTests(unittest.TestCase):
         self.assertTrue(result)
         self.assertEqual(run.call_args.kwargs["timeout"], 12345)
         self.assertEqual(run.call_args.kwargs["env"]["HARBOR_TIMEOUT_SECONDS"], "12345")
+        self.assertEqual(run.call_args.kwargs["env"]["HARBOR_EXTERNAL_TIMEOUT"], "1")
 
     def test_python_runner_does_not_complete_on_timeout(self) -> None:
         timed_out = subprocess.CompletedProcess([], 124, "", "timed out")
@@ -146,9 +161,14 @@ class TimeoutWiringTests(unittest.TestCase):
         environment_flag = timeout_args.index("-e")
         self.assertEqual(timeout_args[environment_flag + 1], "modal")
 
+    def test_shell_runner_defers_to_external_timeout(self) -> None:
+        command_args, _ = self._run_shell(external_timeout=True)
 
-class KiraCompatibilityTests(unittest.IsolatedAsyncioTestCase):
-    async def test_one_episode_runs_with_current_harbor(self) -> None:
+        self.assertEqual(command_args[:3], ["run", "harbor", "run"])
+
+
+class KiraLoopSignatureTests(unittest.IsolatedAsyncioTestCase):
+    async def test_run_agent_loop_accepts_current_signature(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             agent = AgentHarness(
                 logs_dir=Path(tmp),

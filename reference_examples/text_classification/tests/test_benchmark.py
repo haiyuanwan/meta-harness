@@ -183,6 +183,58 @@ class BenchmarkTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(runs), 1)
         self.assertIn("--force", runs[0][1])
 
+    def test_build_val_runs_retries_corrupt_result(self) -> None:
+        model = {"model": "provider/unit-model"}
+        memory_systems = [("no_memory", "agents/no_memory.py")]
+
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            patch.object(benchmark, "SEEDS", [42]),
+            patch.object(benchmark, "get_dataset_sizes", return_value=(1, 1, 1)),
+        ):
+            root = Path(tmp)
+            val_file = (
+                benchmark.run_dir(
+                    root / "logs", "unit-dataset", "no_memory", "unit-model"
+                )
+                / "val.json"
+            )
+            val_file.parent.mkdir(parents=True)
+            val_file.write_text("null")
+
+            runs, pending, done = benchmark.build_val_runs(
+                root / "logs",
+                memory_systems,
+                ["unit-dataset"],
+                [model],
+            )
+
+        self.assertEqual((pending, done), (1, 0))
+        self.assertEqual(len(runs), 1)
+        self.assertIn("--force", runs[0][1])
+
+    def test_build_val_runs_skips_usable_result(self) -> None:
+        model = {"model": "provider/unit-model"}
+        memory_systems = [("no_memory", "agents/no_memory.py")]
+
+        with (
+            tempfile.TemporaryDirectory() as tmp,
+            patch.object(benchmark, "SEEDS", [42]),
+            patch.object(benchmark, "get_dataset_sizes", return_value=(1, 1, 1)),
+        ):
+            root = Path(tmp)
+            self._write_result(root / "logs", 42, {"accuracy": 1.0}, "no_memory")
+
+            runs, pending, done = benchmark.build_val_runs(
+                root / "logs",
+                memory_systems,
+                ["unit-dataset"],
+                [model],
+            )
+
+        self.assertEqual((pending, done), (0, 1))
+        self.assertEqual(runs, [])
+
     async def test_main_propagates_worker_failure_and_uses_results_dir(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)

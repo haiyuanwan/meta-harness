@@ -216,4 +216,4 @@ reference_examples/text_classification/data/**/__pycache__/
 reference_examples/text_classification/data/**/*.pyc
 reference_examples/terminal_bench_2/offline_experience/
 jobs/
-experiments/harbor_meta_harness/datasets/
+experimental/harbor_meta_harness/datasets/

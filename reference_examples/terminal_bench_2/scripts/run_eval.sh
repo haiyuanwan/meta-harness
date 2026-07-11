@@ -65,12 +65,13 @@ echo "runs:        $RUNS"
 echo "timeout:     ${HARBOR_TIMEOUT_SECONDS}s"
 echo ""
 
-# Prefer an outer wall-clock timeout when GNU timeout is available.
 TIMEOUT_CMD=()
-if command -v timeout >/dev/null 2>&1; then
-    TIMEOUT_CMD=(timeout --signal=TERM --kill-after=60 "$HARBOR_TIMEOUT_SECONDS")
-elif command -v gtimeout >/dev/null 2>&1; then
-    TIMEOUT_CMD=(gtimeout --signal=TERM --kill-after=60 "$HARBOR_TIMEOUT_SECONDS")
+if [[ "${HARBOR_EXTERNAL_TIMEOUT:-0}" != "1" ]]; then
+    if command -v timeout >/dev/null 2>&1; then
+        TIMEOUT_CMD=(timeout --signal=TERM --kill-after=60 "$HARBOR_TIMEOUT_SECONDS")
+    elif command -v gtimeout >/dev/null 2>&1; then
+        TIMEOUT_CMD=(gtimeout --signal=TERM --kill-after=60 "$HARBOR_TIMEOUT_SECONDS")
+    fi
 fi
 
 CMD=(

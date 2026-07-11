@@ -158,7 +158,8 @@ def validate_agent_class(import_path):
 def harbor_run(import_path, job_name, n_trials=2, n_concurrent=10):
     """Run Harbor on the paper TB2 config using the selected environment.
 
-    result_dict is None if harbor crashed hard; job_dir may still have partial results.
+    The result is None if Harbor fails or times out.
+    Callers do not parse partial results from timed-out jobs.
     """
     cmd = [
         str(EVOLVE_DIR / "scripts" / "run_eval.sh"),
@@ -175,6 +176,7 @@ def harbor_run(import_path, job_name, n_trials=2, n_concurrent=10):
     env = os.environ.copy()
     env["HARBOR_MODEL"] = MODEL
     env["HARBOR_TIMEOUT_SECONDS"] = str(HARBOR_TIMEOUT_SECONDS)
+    env["HARBOR_EXTERNAL_TIMEOUT"] = "1"
 
     try:
         result = subprocess.run(

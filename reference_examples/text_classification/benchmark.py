@@ -484,7 +484,7 @@ def build_val_runs(
                     rd = run_dir(logs_dir, dataset, mem_name, model_name, seed)
                     val_file = rd / "val.json"
 
-                    if val_file.exists():
+                    if val_file.exists() and _has_usable_result(val_file):
                         num_done += 1
                         continue
 
@@ -524,6 +524,8 @@ def build_val_runs(
                         cmd.extend(["--num-epochs", str(num_epochs)])
                     if temperature is not None:
                         cmd.extend(["--temperature", str(temperature)])
+                    if val_file.exists():
+                        cmd.append("--force")
                     runs.append((desc, cmd))
     random.shuffle(runs)
     return runs, len(runs), num_done

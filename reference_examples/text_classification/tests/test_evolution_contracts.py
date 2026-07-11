@@ -151,7 +151,7 @@ class HeldOutIsolationTests(unittest.TestCase):
         self.assertEqual(command[results_flag + 1], str(root / "logs/run/results"))
         self.assertEqual(command[-2:], ["--results", "--test"])
 
-    def test_corrupt_finalization_still_blocks_evolution(self) -> None:
+    def test_incomplete_finalization_allows_evolution(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             run_dir = root / "logs" / "test-run"
@@ -181,8 +181,7 @@ class HeldOutIsolationTests(unittest.TestCase):
             ):
                 with self.assertRaises(SystemExit):
                     meta_harness.run_evolve(_args(test=True))
-                with self.assertRaises(SystemExit):
-                    meta_harness.run_evolve(_args())
+                meta_harness.run_evolve(_args())
 
             state = json.loads((run_dir / "finalized.json").read_text())
 

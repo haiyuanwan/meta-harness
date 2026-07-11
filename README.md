@@ -5,7 +5,8 @@
 Meta-Harness is a framework for automated search over task-specific model harnesses: the code around a fixed base model that decides what to store, retrieve, and show while the model works. This repo contains the framework and two reference experiments from the paper.
 The paper is [Meta-Harness: End-to-End Optimization of Model Harnesses](https://arxiv.org/abs/2603.28052).
 
-**If you end up building something cool with Meta-Harness, please let us know!** We would be happy to showcase it here in the main README and link to your repository, artifact, blog post, paper, or whatever else is most useful.
+If you build with Meta-Harness, please send us a link.
+We may add your repository, artifact, post, or paper to this README.
 
 ## Contents
 
@@ -14,6 +15,14 @@ The paper is [Meta-Harness: End-to-End Optimization of Model Harnesses](https://
   - [`reference_examples/text_classification/`](reference_examples/text_classification/README.md): memory-system search for text classification.
   - [`reference_examples/terminal_bench_2/`](reference_examples/terminal_bench_2/README.md): scaffold evolution for Terminal-Bench 2.0.
 - The optimized Terminal-Bench 2 harness from the paper lives in the separate artifact repo: [stanford-iris-lab/meta-harness-tbench2-artifact](https://github.com/stanford-iris-lab/meta-harness-tbench2-artifact).
+
+## Community Projects
+
+- [Don't Train the Model, Evolve the Harness](https://huggingface.co/spaces/joelniklaus/harness-optimization): Applies Meta-Harness to Harvey's Legal Agent Benchmark.
+- [dkhanal/meta-harness](https://huggingface.co/dkhanal/meta-harness): Independent implementation with a Symptom2Disease demo.
+- [SuperagenticAI/metaharness](https://github.com/SuperagenticAI/metaharness): Python library and CLI for harness optimization with Codex.
+- [Harness Forge](https://github.com/001TMF/harness-forge): Reimplements Meta-Harness as a native Claude Code skill.
+- [meta-harness-on-islo](https://github.com/zozo123/meta-harness-on-islo): Applies the optimization loop to Islo sandboxes.
 
 ## Quick Start
 
