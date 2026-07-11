@@ -12,6 +12,7 @@ EXTRA_FLAGS=("$@")
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_DIR="$(dirname "$SCRIPT_DIR")"
+export PYTHONPATH="$REPO_DIR${PYTHONPATH:+:$PYTHONPATH}"
 
 # Load local .env (override shell environment)
 if [[ -f "$REPO_DIR/.env" ]]; then
@@ -22,6 +23,15 @@ if [[ -f "$REPO_DIR/.env" ]]; then
 fi
 
 MODEL="${HARBOR_MODEL:-anthropic/claude-opus-4-6}"
+HARBOR_TIMEOUT_SECONDS="${HARBOR_TIMEOUT_SECONDS:-28800}"
+HARBOR_ENVIRONMENT="${HARBOR_ENVIRONMENT:-runloop}"
+
+case "$HARBOR_ENVIRONMENT" in
+    runloop|modal) ;;
+    *) echo "Unknown HARBOR_ENVIRONMENT '$HARBOR_ENVIRONMENT'. Use: runloop | modal" >&2; exit 1 ;;
+esac
+
+uv run python "$REPO_DIR/meta_harness.py" --validate-agent "$AGENT_IMPORT_PATH"
 
 # 30-task hard subset for cheaper development and debugging loops.
 HARD_TASKS=(
@@ -47,28 +57,31 @@ case "$TASK_SET" in
 esac
 
 echo "agent:       $AGENT_IMPORT_PATH"
+echo "environment: $HARBOR_ENVIRONMENT"
 echo "task_set:    $TASK_SET"
 echo "model:       $MODEL"
 echo "concurrent:  $N_CONCURRENT"
 echo "runs:        $RUNS"
+echo "timeout:     ${HARBOR_TIMEOUT_SECONDS}s"
 echo ""
 
 # Prefer an outer wall-clock timeout when GNU timeout is available.
 TIMEOUT_CMD=()
 if command -v timeout >/dev/null 2>&1; then
-    TIMEOUT_CMD=(timeout --signal=TERM --kill-after=60 2h)
+    TIMEOUT_CMD=(timeout --signal=TERM --kill-after=60 "$HARBOR_TIMEOUT_SECONDS")
 elif command -v gtimeout >/dev/null 2>&1; then
-    TIMEOUT_CMD=(gtimeout --signal=TERM --kill-after=60 2h)
+    TIMEOUT_CMD=(gtimeout --signal=TERM --kill-after=60 "$HARBOR_TIMEOUT_SECONDS")
 fi
 
 CMD=(
     uv run harbor run
-    --agent-import-path "$AGENT_IMPORT_PATH"
+    --agent "$AGENT_IMPORT_PATH"
     -d "terminal-bench@2.0"
     -m "$MODEL"
-    -e runloop
+    -e "$HARBOR_ENVIRONMENT"
     -n "$N_CONCURRENT"
     --n-attempts "$RUNS"
+    --ak temperature=0.7
 )
 if [[ ${#TASK_FLAGS[@]} -gt 0 ]]; then
     CMD+=("${TASK_FLAGS[@]}")

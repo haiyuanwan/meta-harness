@@ -9,6 +9,7 @@ Variant:
 Uses a global max_chars=50000 cap (matching MCE reproduce).
 """
 
+import hashlib
 import json
 import random
 from typing import Any
@@ -30,6 +31,11 @@ PROMPT_TEMPLATE = """Solve the problem below based on the examples provided.
 {{"reasoning": "[your reasoning]", "final_answer": "[your answer]"}}"""
 
 MAX_CHARS = 30000
+
+
+def _seed_for_input(input: str) -> int:
+    """Return a stable per-input seed across Python processes."""
+    return int.from_bytes(hashlib.sha256(input.encode()).digest()[:8], "big")
 
 
 class FewShotMemory(MemorySystem):
@@ -69,7 +75,7 @@ class FewShotMemory(MemorySystem):
 
         parts = []
         total_chars = 0
-        for i, ex in enumerate(to_use, 1):
+        for ex in to_use:
             # Use raw_question for demos (avoids repeating task context per example)
             question = ex.get("raw_question", ex["input"])
             part = f"Q: {question}\nA: {ex['target']}"
@@ -82,8 +88,7 @@ class FewShotMemory(MemorySystem):
 
     def predict(self, input: str) -> tuple[str, dict[str, Any]]:
         """Generate prediction using accumulated few-shot examples."""
-        # Use input hash as seed so each instance gets a different random sample
-        seed = hash(input) & 0xFFFFFFFF
+        seed = _seed_for_input(input)
         examples_section = self._format_examples_section(seed=seed)
         prompt = PROMPT_TEMPLATE.format(
             examples_section=examples_section,

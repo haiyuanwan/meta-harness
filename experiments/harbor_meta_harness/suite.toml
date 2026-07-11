@@ -1,0 +1,15 @@
+# Explicit Harbor task paths relative to this file's directory.
+tasks = [
+  "tasks/reconcile-ledger",
+  "tasks/dedupe-events",
+  "tasks/budget-rollups",
+]
+
+child_model = "openai/gpt-5.4-nano"
+environment = "modal"
+n_attempts = 1
+eval_budget = 4
+seed_harness = "tasks/select-harness/environment/harness.py"
+
+# mean | min | fraction_solved
+aggregate = "mean"

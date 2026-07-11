@@ -20,9 +20,16 @@ uv run python meta_harness.py --iterations 1
 Run one memory system on one dataset:
 
 ```bash
+RUN=logs/manual
+OUT="$RUN/Symptom2Disease/fewshot_all/gpt-oss-120b"
+mkdir -p "$OUT"
 PYTHONPATH=.. uv run python -m text_classification.inner_loop \
   --memory fewshot_all \
-  --dataset Symptom2Disease
+  --dataset Symptom2Disease \
+  --model openrouter/openai/gpt-oss-120b \
+  --val-output "$OUT/val.json" \
+  --save-memory "$OUT/memory.json"
+uv run python benchmark.py --logs-dir "$RUN" --results
 ```
 
 By default this uses the model in `config.yaml` (`openrouter/openai/gpt-oss-120b`). To target another provider or any OpenAI-compatible endpoint, override `--model` and optionally `--api-base`.
@@ -31,6 +38,24 @@ Print the benchmark summary:
 
 ```bash
 uv run python benchmark.py --results
+```
+
+Evolution uses validation results only. Finalize a named run explicitly after
+selection is complete:
+
+```bash
+uv run python meta_harness.py --run-name my-run --test
+```
+
+Test results are written under `logs/my-run/results/` and printed at the end.
+Finalization permanently blocks more evolution under that run name. The test
+data is included in this public repository, so this is operational isolation,
+not access control.
+
+Run provider-free tests:
+
+```bash
+PYTHONPATH=.. uv run python -m unittest discover -s tests -v
 ```
 
 ## Layout Notes

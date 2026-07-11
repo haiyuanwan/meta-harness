@@ -1,10 +1,11 @@
 """Autonomous evolution loop for memory systems.
 
-Val-only during evolution (test never exposed).
+Validation-only during evolution. Test evaluation requires explicit finalization.
 Uses claude_wrapper + meta-harness skill to propose new memory systems.
 
     uv run python meta_harness.py --iterations 20 --fresh
     uv run python meta_harness.py --iterations 10 --run-name my-run
+    uv run python meta_harness.py --run-name my-run --test
 """
 
 import argparse
@@ -32,6 +33,8 @@ LOGS_DIR = EVOLVE_DIR / "logs"
 PENDING_EVAL = LOGS_DIR / "pending_eval.json"
 FRONTIER_VAL = LOGS_DIR / "frontier_val.json"
 EVOLUTION_SUMMARY = LOGS_DIR / "evolution_summary.jsonl"
+RESULTS_DIR = LOGS_DIR / "results"
+FINALIZED = LOGS_DIR / "finalized.json"
 
 PROPOSER_ALLOWED_TOOLS = [
     "Read",
@@ -115,7 +118,17 @@ def run_cmd(cmd, timeout=7200, cwd=None):
 
 def run_benchmark(args):
     return run_cmd(
-        ["uv", "run", "python", "benchmark.py", "--logs-dir", str(LOGS_DIR)] + args,
+        [
+            "uv",
+            "run",
+            "python",
+            "benchmark.py",
+            "--logs-dir",
+            str(LOGS_DIR),
+            "--results-dir",
+            str(RESULTS_DIR),
+        ]
+        + args,
         cwd=str(EVOLVE_DIR),
     )
 
@@ -270,8 +283,83 @@ def fresh_start():
     print(f"  {_green('Fresh start')}: cleared generated agents and log files")
 
 
+def finalize_run(baselines, datasets, model_short):
+    """Evaluate test once, after freezing this run against further evolution."""
+    if not FRONTIER_VAL.exists():
+        print(f"ERROR: no validation frontier for run at {LOGS_DIR}")
+        raise SystemExit(1)
+
+    if FINALIZED.exists():
+        state = json.loads(FINALIZED.read_text())
+        if state.get("status") == "complete":
+            print(f"Run already finalized: {LOGS_DIR.name}")
+            result = run_benchmark(["--results", "--test"])
+            if result.stdout:
+                print(result.stdout)
+            return
+
+    frontier = json.loads(FRONTIER_VAL.read_text())
+    pareto = frontier.get("_pareto", [])
+    test_systems = set(baselines)
+    test_systems.update(entry["system"] for entry in pareto)
+    for key, value in frontier.items():
+        if not key.startswith("_") and isinstance(value, dict):
+            if "best_system" in value:
+                test_systems.add(value["best_system"])
+
+    FINALIZED.write_text(
+        json.dumps(
+            {
+                "status": "in_progress",
+                "started_at": datetime.now().isoformat(),
+                "systems": sorted(test_systems),
+            },
+            indent=2,
+        )
+    )
+
+    print(f"\n{_ts()} {_bold('Phase Final: Test evaluation')}")
+    failed = False
+    for name in sorted(test_systems):
+        print(f"  {_ts()} test eval: {_bold(name)}", flush=True)
+        result = run_benchmark(["--memory", name, "--test"])
+        if result.returncode != 0:
+            failed = True
+            print(f"    {_red('FAIL')} {name} test eval failed")
+
+    frontier_result = run_benchmark(["--frontier", "--test", "--model", model_short])
+    failed = failed or frontier_result.returncode != 0
+
+    result = run_benchmark(["--results", "--test"])
+    failed = failed or result.returncode != 0
+    if result.stdout:
+        print(result.stdout)
+
+    test_results = load_results(RESULTS_DIR, "test.json")
+    missing = [
+        (model_short, dataset, system)
+        for system in test_systems
+        for dataset in datasets
+        if (model_short, dataset, system) not in test_results
+    ]
+    if missing:
+        failed = True
+        print(f"Missing {len(missing)} complete test result group(s).")
+
+    if failed:
+        print("Test finalization incomplete. Fix failures, then rerun --test.")
+        raise SystemExit(1)
+
+    state = json.loads(FINALIZED.read_text())
+    state["status"] = "complete"
+    state["completed_at"] = datetime.now().isoformat()
+    FINALIZED.write_text(json.dumps(state, indent=2))
+    print(f"\n{_ts()} {_bold('Test finalization complete.')}")
+
+
 def run_evolve(args):
     global LOGS_DIR, PENDING_EVAL, FRONTIER_VAL, EVOLUTION_SUMMARY
+    global RESULTS_DIR, FINALIZED
 
     with open(CONFIG_PATH) as f:
         cfg = yaml.safe_load(f)
@@ -293,9 +381,22 @@ def run_evolve(args):
     PENDING_EVAL = LOGS_DIR / "pending_eval.json"
     FRONTIER_VAL = LOGS_DIR / "frontier_val.json"
     EVOLUTION_SUMMARY = LOGS_DIR / "evolution_summary.jsonl"
+    RESULTS_DIR = LOGS_DIR / "results"
+    FINALIZED = LOGS_DIR / "finalized.json"
 
     LOGS_DIR.mkdir(parents=True, exist_ok=True)
     AGENTS_DIR.mkdir(parents=True, exist_ok=True)
+
+    baselines = cfg["memory_systems"]["baselines"]
+    if args.test:
+        finalize_run(baselines, datasets, model_short)
+        return
+
+    if FINALIZED.exists():
+        print(
+            f"ERROR: run '{run_name}' is finalized; use a new --run-name to continue evolution"
+        )
+        raise SystemExit(1)
 
     if args.fresh:
         fresh_start()
@@ -307,7 +408,6 @@ def run_evolve(args):
     )
 
     # ── Phase 0: Baselines ─────────────────────────────────────
-    baselines = cfg["memory_systems"]["baselines"]
     if not args.skip_baseline:
         print(f"\n{_ts()} {_bold('Phase 0: Baselines')}  systems={baselines}")
         for bl in baselines:
@@ -467,35 +567,13 @@ def run_evolve(args):
             f"  {_dim(f'timing: propose={_elapsed(propose_time)} bench={_elapsed(bench_time)} total={_elapsed(wall_time)}')}"
         )
 
-    # ── Phase Final: Test eval ─────────────────────────────────
     if _interrupted:
         return
 
-    print(f"\n{_ts()} {_bold('Phase Final: Test evaluation')}")
-
-    frontier = json.loads(FRONTIER_VAL.read_text()) if FRONTIER_VAL.exists() else {}
-    pareto = frontier.get("_pareto", [])
-
-    test_systems = set(baselines)
-    for entry in pareto:
-        test_systems.add(entry["system"])
-    for key, val in frontier.items():
-        if not key.startswith("_") and isinstance(val, dict) and "best_system" in val:
-            test_systems.add(val["best_system"])
-
-    for name in sorted(test_systems):
-        print(f"  {_ts()} test eval: {_bold(name)}", flush=True)
-        result = run_benchmark(["--memory", name, "--test"])
-        if result.returncode != 0:
-            print(f"    {_red('FAIL')} {name} test eval failed")
-
-    run_benchmark(["--frontier", "--test", "--model", model_short])
-
-    result = run_benchmark(["--results"])
-    if result.stdout:
-        print(result.stdout)
-
-    print(f"\n{_ts()} {_bold('Evolution complete.')}")
+    print(f"\n{_ts()} {_bold('Validation evolution complete.')}")
+    print(
+        f"Finalize once with: uv run python meta_harness.py --run-name {run_name} --test"
+    )
 
 
 def main():
@@ -527,7 +605,17 @@ def main():
     parser.add_argument(
         "--skip-baseline", action="store_true", help="Skip Phase 0 baseline eval"
     )
+    parser.add_argument(
+        "--test",
+        action="store_true",
+        help="Finalize an existing named run with one held-out test evaluation",
+    )
     args = parser.parse_args()
+
+    if args.test and not args.run_name:
+        parser.error("--test requires --run-name")
+    if args.test and args.fresh:
+        parser.error("--test cannot be combined with --fresh")
 
     signal.signal(signal.SIGINT, _handle_signal)
     signal.signal(signal.SIGTERM, _handle_signal)

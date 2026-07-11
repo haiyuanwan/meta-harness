@@ -21,7 +21,6 @@ _EMPTY_PLUGIN_DIR = Path(__file__).parent / ".empty_plugins"
 
 # Common tool sets
 TOOLS_READ = ["Read", "Glob", "Grep"]
-TOOLS_WRITE = ["Read", "Glob", "Grep", "Edit", "Write"]
 TOOLS_BASH = ["Read", "Glob", "Grep", "Edit", "Write", "Bash"]
 TOOLS_ALL = TOOLS_BASH + ["Agent", "WebSearch", "WebFetch"]
 
@@ -572,9 +571,6 @@ def run(
     effective_cwd = cwd or os.getcwd()
 
     env = os.environ.copy()
-    # Use API key if available (cheaper, no subscription needed), else subscription auth
-    if "ANTHROPIC_API_KEY" not in env:
-        pass  # will use subscription auth automatically
 
     # Resolve progress callback
     if progress is True:

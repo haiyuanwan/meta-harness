@@ -1,0 +1,15 @@
+# Active optimization suite: TB2 Easy (probe gap 0.0 -> 0.5).
+tasks = [
+  "datasets/terminal-bench-2/cobol-modernization",
+  "datasets/terminal-bench-2/fix-git",
+  "datasets/terminal-bench-2/overfull-hbox",
+  "datasets/terminal-bench-2/prove-plus-comm",
+]
+
+child_model = "openai/gpt-5.4-nano"
+environment = "modal"
+n_attempts = 1
+eval_budget = 8
+seed_harness = "tasks/select-harness/environment/harness.py"
+aggregate = "mean"
+child_timeout_sec = 600

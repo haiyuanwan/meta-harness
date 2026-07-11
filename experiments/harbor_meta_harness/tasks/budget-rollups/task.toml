@@ -1,0 +1,28 @@
+schema_version = "1.1"
+
+[task]
+name = "meta-harness/budget-rollups"
+description = "Roll up approved spend by cost center into a sorted JSON object."
+authors = []
+keywords = ["csv", "aggregation"]
+
+[verifier]
+timeout_sec = 120.0
+
+[agent]
+timeout_sec = 240.0
+
+[environment]
+build_timeout_sec = 300.0
+cpus = 1
+memory_mb = 2048
+storage_mb = 1024
+gpus = 0
+allow_internet = false
+
+[meta_harness]
+forbidden_references = [
+  "budget-rollups",
+  "spend.csv",
+  "rollups.json",
+]

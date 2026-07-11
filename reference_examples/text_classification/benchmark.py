@@ -27,11 +27,6 @@ def get_model_short_name(model_id: str) -> str:
 _CONFIG = load_config()
 DATASETS = _CONFIG["datasets"]
 MODELS = _CONFIG["models"]  # List of {model, api_base} dicts
-BASELINE_NAMES = _CONFIG["memory_systems"]["baselines"]
-PROPOSED_NAMES = _CONFIG["memory_systems"]["proposed"]
-MEMORY_SYSTEMS = [(n, f"agents/{n}.py") for n in BASELINE_NAMES] + [
-    (n, f"agents/{n}.py") for n in PROPOSED_NAMES
-]
 SEEDS = _CONFIG["benchmark"]["seeds"]
 CONCURRENCY = _CONFIG["benchmark"]["concurrency"]
 _DS_DEFAULTS = {k: _CONFIG["dataset"][k] for k in ("num_train", "num_val", "num_test")}
@@ -173,23 +168,74 @@ def parse_run_path(base: Path, filepath: Path) -> dict | None:
         return None
 
 
+def _has_usable_result(path: Path) -> bool:
+    try:
+        data = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return False
+    return isinstance(data, dict) and isinstance(data.get("accuracy"), (int, float))
+
+
 def load_results(base_dir: Path, filename: str = "val.json") -> dict:
     """Load results from hierarchical dir structure.
 
     Globs base_dir/**/filename, parses path to extract (dataset, memory, model, seed).
-    Returns dict: (model, dataset, memory) -> data dict (with 'accuracy' field).
+    Returns complete seed groups as (model, dataset, memory) -> aggregate data.
     """
-    results = {}
+    grouped = defaultdict(dict)
     for filepath in base_dir.rglob(filename):
         parsed = parse_run_path(base_dir, filepath)
         if not parsed:
             continue
         try:
             data = json.loads(filepath.read_text())
+            if not isinstance(data, dict):
+                continue
             key = (parsed["model"], parsed["dataset"], parsed["memory"])
-            results[key] = data
+            grouped[key][parsed["seed"]] = data
         except (json.JSONDecodeError, KeyError):
             continue
+
+    results = {}
+    required_seeds = sorted(set(SEEDS))
+    summed_fields = (
+        "runtime_seconds",
+        "llm_calls",
+        "llm_input_tokens",
+        "llm_output_tokens",
+        "llm_total_tokens",
+    )
+    for key, by_seed in grouped.items():
+        if any(seed not in by_seed for seed in required_seeds):
+            continue
+        seed_results = [by_seed[seed] for seed in required_seeds]
+        aggregate = dict(seed_results[0])
+        aggregate.pop("seed", None)
+        aggregate["seeds"] = required_seeds
+
+        try:
+            if all("correct" in data and "total" in data for data in seed_results):
+                aggregate["correct"] = sum(data["correct"] for data in seed_results)
+                aggregate["total"] = sum(data["total"] for data in seed_results)
+                aggregate["accuracy"] = (
+                    aggregate["correct"] / aggregate["total"]
+                    if aggregate["total"]
+                    else 0.0
+                )
+            else:
+                aggregate.pop("correct", None)
+                aggregate.pop("total", None)
+                aggregate["accuracy"] = sum(
+                    data["accuracy"] for data in seed_results
+                ) / len(seed_results)
+            aggregate["memory_context_chars"] = sum(
+                data.get("memory_context_chars", 0) for data in seed_results
+            ) / len(seed_results)
+            for field in summed_fields:
+                aggregate[field] = sum(data.get(field, 0) for data in seed_results)
+        except (KeyError, TypeError, ZeroDivisionError):
+            continue
+        results[key] = aggregate
     return results
 
 
@@ -230,18 +276,37 @@ def compute_pareto_frontier(
 ) -> list[tuple[str, float, int]]:
     """Compute Pareto frontier for (name, accuracy, ctx_tokens).
 
-    A point is Pareto-optimal if no other point has both
-    higher accuracy AND lower ctx_tokens (maximize accuracy, minimize tokens).
+    A point is Pareto-optimal if no other point is at least as accurate and no
+    more expensive, with at least one strict improvement.
     Returns points sorted by accuracy descending.
     """
-    sorted_points = sorted(points, key=lambda x: (-x[1], x[2]))
-    pareto = []
-    min_tokens = float("inf")
-    for name, acc, tok in sorted_points:
-        if tok <= min_tokens:
-            pareto.append((name, acc, tok))
-            min_tokens = tok
-    return pareto
+    pareto = [
+        point
+        for point in points
+        if not any(
+            other_acc >= point[1]
+            and other_tokens <= point[2]
+            and (other_acc > point[1] or other_tokens < point[2])
+            for _, other_acc, other_tokens in points
+        )
+    ]
+    return sorted(pareto, key=lambda x: (-x[1], x[2]))
+
+
+def _inner_loop_command() -> list[str]:
+    """Return a cwd-independent command prefix for inner-loop workers."""
+    project_dir = Path(__file__).resolve().parent
+    return [
+        "env",
+        f"PYTHONPATH={project_dir.parent}",
+        "uv",
+        "run",
+        "--project",
+        str(project_dir),
+        "python",
+        "-m",
+        "text_classification.inner_loop",
+    ]
 
 
 def print_results(results: dict, metric_label: str = "val", pareto_only: bool = False):
@@ -252,12 +317,7 @@ def print_results(results: dict, metric_label: str = "val", pareto_only: bool = 
 
     memory_names = sorted(set(mem for _, _, mem in results.keys()))
 
-    ds_short = {
-        "word_sorting": "word_sort",
-        "MathEquationBalancer": "MathEqn",
-        "bbh/causal_judgement": "bbh/caus",
-        "Symptom2Disease": "Symptom",
-    }
+    ds_short = {"Symptom2Disease": "Symptom"}
 
     models_in_results = sorted(set(m for m, _, _ in results.keys()))
     target_models = [get_model_short_name(m["model"]) for m in MODELS]
@@ -430,14 +490,7 @@ def build_val_runs(
 
                     rd.mkdir(parents=True, exist_ok=True)
                     desc = f"val/{dataset}/{mem_name}/{model_name}"
-                    cmd = [
-                        "env",
-                        "PYTHONPATH=..",
-                        "uv",
-                        "run",
-                        "python",
-                        "-m",
-                        "text_classification.inner_loop",
+                    cmd = _inner_loop_command() + [
                         "--memory",
                         mem_path,
                         "--dataset",
@@ -483,7 +536,6 @@ def build_test_runs(
     datasets: list[str],
     models: list[dict],
     mode: str = "online",
-    num_epochs: int = 1,
     temperature: float | None = None,
 ) -> tuple[list[tuple[str, list[str]]], int, int]:
     """Build (description, command) pairs for test runs that need to run."""
@@ -502,7 +554,7 @@ def build_test_runs(
                     )
                     test_file = rd_results / "test.json"
 
-                    if test_file.exists():
+                    if test_file.exists() and _has_usable_result(test_file):
                         num_done += 1
                         continue
 
@@ -517,14 +569,7 @@ def build_test_runs(
 
                     rd_results.mkdir(parents=True, exist_ok=True)
                     desc = f"test/{dataset}/{mem_name}/{model_name}"
-                    cmd = [
-                        "env",
-                        "PYTHONPATH=..",
-                        "uv",
-                        "run",
-                        "python",
-                        "-m",
-                        "text_classification.inner_loop",
+                    cmd = _inner_loop_command() + [
                         "--memory",
                         mem_path,
                         "--dataset",
@@ -554,6 +599,8 @@ def build_test_runs(
                         cmd.extend(["--api-base", api_base])
                     if temperature is not None:
                         cmd.extend(["--temperature", str(temperature)])
+                    if test_file.exists():
+                        cmd.append("--force")
                     runs.append((desc, cmd))
     random.shuffle(runs)
     return runs, len(runs), num_done
@@ -694,11 +741,15 @@ def print_summary(logs_dir: Path, results_dir: Path):
 
 
 def print_missing(
-    logs_dir: Path, memory_systems: list, datasets: list, metric: str = "val"
+    logs_dir: Path,
+    memory_systems: list,
+    datasets: list,
+    metric: str = "val",
+    results_dir: Path | None = None,
 ):
     """Print missing results."""
     if metric == "test":
-        results = load_results(logs_dir.parent / "results", "test.json")
+        results = load_results(results_dir or logs_dir.parent / "results", "test.json")
     else:
         results = load_results(logs_dir, "val.json")
     all_memories = [n for n, _ in memory_systems]
@@ -761,11 +812,19 @@ async def main():
         default=None,
         help="Override logs directory (default: logs/)",
     )
+    parser.add_argument(
+        "--results-dir",
+        type=str,
+        default=None,
+        help="Override test results directory (default: results/)",
+    )
     args = parser.parse_args()
 
     base = Path(__file__).parent
     logs_dir = Path(args.logs_dir).resolve() if args.logs_dir else base / "logs"
-    results_dir = base / "results"
+    results_dir = (
+        Path(args.results_dir).resolve() if args.results_dir else base / "results"
+    )
     logs_dir.mkdir(parents=True, exist_ok=True)
     results_dir.mkdir(parents=True, exist_ok=True)
 
@@ -831,7 +890,6 @@ async def main():
             datasets,
             MODELS,
             args.mode,
-            args.num_epochs,
             args.temperature,
         )
     else:
@@ -880,7 +938,13 @@ async def main():
     print(f"\nCompleted: {succeeded}/{len(job_results)}")
 
     print_summary(logs_dir, results_dir)
-    print_missing(logs_dir, memory_systems, datasets, metric=metric)
+    print_missing(
+        logs_dir,
+        memory_systems,
+        datasets,
+        metric=metric,
+        results_dir=results_dir,
+    )
 
     if args.test:
         print_results(load_results(results_dir, "test.json"), metric_label="test")
@@ -889,6 +953,8 @@ async def main():
         print_results(results, metric_label="val")
         update_summary(logs_dir)
 
+    return 0 if succeeded == len(job_results) else 1
+
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    raise SystemExit(asyncio.run(main()))

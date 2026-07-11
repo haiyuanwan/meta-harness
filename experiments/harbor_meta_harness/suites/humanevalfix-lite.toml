@@ -1,0 +1,21 @@
+# Active optimization suite: HumanEvalFix lite (probe gap 0.0 -> 0.7).
+tasks = [
+  "datasets/humanevalfix/python-0",
+  "datasets/humanevalfix/python-1",
+  "datasets/humanevalfix/python-10",
+  "datasets/humanevalfix/python-100",
+  "datasets/humanevalfix/python-101",
+  "datasets/humanevalfix/python-102",
+  "datasets/humanevalfix/python-103",
+  "datasets/humanevalfix/python-104",
+  "datasets/humanevalfix/python-105",
+  "datasets/humanevalfix/python-106",
+]
+
+child_model = "openai/gpt-5.4-nano"
+environment = "modal"
+n_attempts = 1
+eval_budget = 8
+seed_harness = "tasks/select-harness/environment/harness.py"
+aggregate = "mean"
+child_timeout_sec = 600

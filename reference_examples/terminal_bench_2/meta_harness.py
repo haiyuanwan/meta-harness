@@ -8,6 +8,8 @@ official TB2 dataset used in the paper runs.
 """
 
 import argparse
+import importlib
+import inspect
 import json
 import os
 import signal
@@ -88,17 +90,16 @@ BASELINES = [
     ("terminus2-baseline", "agents.baseline_terminus2:AgentHarness"),
 ]
 BASELINE_AGENT_NAME = BASELINES[0][0]  # primary baseline for frontier comparison
-BASELINE_IMPORT_PATH = BASELINES[0][1]
 
 EVAL_TASK_SET = "full"
 N_EVAL_TASKS = 89  # full official TB2 dataset used in the paper runs
 
 SMOKE_TEST_TASK = "extract-elf"  # simple task, reliably fast
 
-DATASET = "terminal-bench@2.0"
 MODEL = "anthropic/claude-opus-4-6"
 DEFAULT_SEARCH_TRIALS = 2
 DEFAULT_CONCURRENCY = 50
+HARBOR_TIMEOUT_SECONDS = int(os.environ.get("HARBOR_TIMEOUT_SECONDS", 8 * 60 * 60))
 
 PROPOSER_ALLOWED_TOOLS = [
     "Read",
@@ -119,7 +120,7 @@ def _handle_signal(signum, frame):
     print("\nInterrupted, finishing current step...", flush=True)
 
 
-def run_cmd(cmd, timeout=7200, cwd=None):
+def run_cmd(cmd, timeout=HARBOR_TIMEOUT_SECONDS, cwd=None):
     """Run a subprocess; return CompletedProcess (returncode=124 on timeout)."""
     env = os.environ.copy()
     env["HARBOR_MODEL"] = MODEL
@@ -136,8 +137,26 @@ def run_cmd(cmd, timeout=7200, cwd=None):
         return subprocess.CompletedProcess(cmd, 124, "", f"Timed out after {timeout}s")
 
 
+def validate_agent_class(import_path):
+    """Load and return the exact Terminus2 subclass named by an import path."""
+    module_name, separator, class_name = import_path.partition(":")
+    if not separator or not module_name or not class_name:
+        raise ValueError("agent import path must be MODULE:CLASS")
+
+    module = importlib.import_module(module_name)
+    agent_class = getattr(module, class_name)
+    if not inspect.isclass(agent_class):
+        raise TypeError(f"{import_path} is not a class")
+
+    from harbor.agents.terminus_2.terminus_2 import Terminus2
+
+    if not issubclass(agent_class, Terminus2):
+        raise TypeError(f"{import_path} must subclass Terminus2")
+    return agent_class
+
+
 def harbor_run(import_path, job_name, n_trials=2, n_concurrent=10):
-    """Run harbor eval on the paper TB2 config via runloop.
+    """Run Harbor on the paper TB2 config using the selected environment.
 
     result_dict is None if harbor crashed hard; job_dir may still have partial results.
     """
@@ -155,19 +174,22 @@ def harbor_run(import_path, job_name, n_trials=2, n_concurrent=10):
 
     env = os.environ.copy()
     env["HARBOR_MODEL"] = MODEL
+    env["HARBOR_TIMEOUT_SECONDS"] = str(HARBOR_TIMEOUT_SECONDS)
 
     try:
         result = subprocess.run(
             cmd,
             cwd=str(EVOLVE_DIR),
-            timeout=14400,
+            timeout=HARBOR_TIMEOUT_SECONDS,
             stdout=None,
             stderr=subprocess.PIPE,
             text=True,
             env=env,
         )
     except subprocess.TimeoutExpired:
-        result = subprocess.CompletedProcess(cmd, 124, "", "Timed out after 14400s")
+        result = subprocess.CompletedProcess(
+            cmd, 124, "", f"Timed out after {HARBOR_TIMEOUT_SECONDS}s"
+        )
 
     job_dir = JOBS_DIR / job_name
     if result.returncode not in (0, 124):
@@ -177,9 +199,8 @@ def harbor_run(import_path, job_name, n_trials=2, n_concurrent=10):
         return job_dir, None
 
     if result.returncode == 124:
-        print(
-            f"  {_yellow('harbor timed out')} job={job_name}, reading partial results"
-        )
+        print(f"  {_yellow('harbor timed out')} job={job_name}")
+        return job_dir, None
 
     return job_dir, True  # signal success; callers use parse_job_results directly
 
@@ -347,10 +368,9 @@ def count_iterations():
     return max_iter
 
 
-def update_frontier(candidates_results, metrics=None):
+def update_frontier(candidates_results):
     """Update frontier_val.json with best agent per task and overall best."""
     frontier = json.loads(FRONTIER_VAL.read_text()) if FRONTIER_VAL.exists() else {}
-    metrics = metrics or {}
 
     for agent_name, (per_task, avg) in candidates_results.items():
         for task, rate in per_task.items():
@@ -436,9 +456,15 @@ def propose_claude(task_prompt, iteration, timeout=2400):
 
 def validate_candidate(name, import_path):
     """Import-check a candidate agent. Returns True if valid."""
-    module_path = import_path.split(":")[0]
     result = run_cmd(
-        ["uv", "run", "python", "-c", f"from {module_path} import *; print('OK')"],
+        [
+            "uv",
+            "run",
+            "python",
+            str(Path(__file__)),
+            "--validate-agent",
+            import_path,
+        ],
         cwd=str(EVOLVE_DIR),
         timeout=30,
     )
@@ -804,7 +830,7 @@ def run_evolve(args):
 
         bench_time = time.time() - bench_start
 
-        update_frontier(results, metrics=all_metrics)
+        update_frontier(results)
         update_evolution_summary(
             iteration,
             valid,
@@ -910,12 +936,27 @@ def main():
         default=DEFAULT_CONCURRENCY,
         help="Max concurrent trials (default: 50)",
     )
+    parser.add_argument(
+        "--validate-agent",
+        metavar="MODULE:CLASS",
+        help=argparse.SUPPRESS,
+    )
     args = parser.parse_args()
+
+    if args.validate_agent:
+        try:
+            agent_class = validate_agent_class(args.validate_agent)
+        except Exception as exc:
+            print(f"Invalid agent {args.validate_agent}: {exc}", file=sys.stderr)
+            return 1
+        print(f"OK: {agent_class.__module__}:{agent_class.__name__}")
+        return 0
 
     signal.signal(signal.SIGINT, _handle_signal)
     signal.signal(signal.SIGTERM, _handle_signal)
     run_evolve(args)
+    return 0
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

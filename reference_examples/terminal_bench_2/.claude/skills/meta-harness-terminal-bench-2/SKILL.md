@@ -27,7 +27,7 @@ You are evolving the **AgentHarness** agent scaffold for Terminal-Bench 2. It is
 
 **The search space is arbitrary Python code.** You can override any method, call any library, make raw API calls, add new tools, change how the LLM is called, rewrite command execution, intercept and transform observations -- anything that's expressible in Python is fair game. The only constraint is that the agent must subclass `harbor.agents.terminus_2.terminus_2.Terminus2` in the same way as `baseline_kira.py` does (for compatibility with the eval harness).
 
-**Model: Claude Opus 4.6.** Evaluation uses the official TB2 hard split. `meta_harness.py` chooses the trial count; the shipped smoke/default path uses 2 trials per task. The released reference run starts from a 28.1% KIRA baseline and reaches 46.5% on this split.
+**Model: Claude Opus 4.6.** Evaluation uses the full official 89-task TB2 dataset. `meta_harness.py` chooses the trial count; the default path uses 2 trials per task.
 
 **Key files to read:**
 
@@ -61,7 +61,7 @@ The agent will be loaded and evaluated through Harbor via `--agent-import-path "
 
 ### Design principles
 
-- Your primary goal is to improve the agent's performance (pass rate) on the Terminal-Bench-2 hard split.
+- Your primary goal is to improve the agent's performance (pass rate) on the full 89-task Terminal-Bench-2 dataset.
 - One mechanism per candidate. Each candidate tests exactly one hypothesis. If you're tempted to add "and also..." -- that's a second candidate.
 - Mechanism-first. Identify a specific failure mode or hypothesis from trajectories, then design changes that target it. Never add changes speculatively.
 

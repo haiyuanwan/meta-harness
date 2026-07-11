@@ -23,6 +23,14 @@ Start with a cheap smoke check:
 uv run bash scripts/run_eval.sh agents.baseline_kira:AgentHarness full 1 1 -i extract-elf
 ```
 
+`run_eval.sh` first verifies that the exact imported object exists, is a class, and subclasses Harbor's `Terminus2`.
+It defaults to Runloop. Use the same entrypoint with Modal by setting:
+
+```bash
+HARBOR_ENVIRONMENT=modal uv run bash scripts/run_eval.sh \
+  agents.baseline_kira:AgentHarness full 1 1 -i extract-elf
+```
+
 When trying a new idea, validate it on the cheaper 30-task `hard` subset before paying for a full default search:
 
 ```bash
@@ -40,6 +48,7 @@ Pass `--full-eval` if you also want the optional 5-trial winner pass on the full
 ## Repro And Troubleshooting
 
 - The shipped `runloop` path requires both `ANTHROPIC_API_KEY` and `RUNLOOP_API_KEY`.
+- The Modal path requires `modal token new` or `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET`.
 - The default paper-style config in this release is Opus 4.6, `full`, `89` tasks, `2` search trials, and concurrency `50`.
 - Anthropic API tier matters for both speed and failure rate.
 - Sharing the same Anthropic API key with other active projects can make runs substantially slower.
@@ -57,3 +66,19 @@ Pass `--full-eval` if you also want the optional 5-trial winner pass on the full
 With Opus 4.6 and a high-tier API key, the default 89x2 search run at concurrency `50` takes about 4-6 hours and costs roughly $500 _per iteration_. The recommended bring-up path is `extract-elf`, then `hard`, then the full default run.
 
 This setup is sensitive to concurrency and Anthropic API throughput. API tier matters, and sharing the same API key with other active projects can make runs much slower. Many failures at higher concurrency are timeout failures caused by insufficient API throughput at the chosen setting.
+
+The Harbor wall-clock timeout defaults to 8 hours. Override it for both the Python and shell layers with `HARBOR_TIMEOUT_SECONDS`.
+
+## Provider-Free Tests
+
+Run the agent import-path checks independently:
+
+```bash
+uv run python -m unittest -v tests.test_meta_harness.AgentClassValidationTests
+```
+
+Run the timeout wiring checks independently:
+
+```bash
+uv run python -m unittest -v tests.test_meta_harness.TimeoutWiringTests
+```

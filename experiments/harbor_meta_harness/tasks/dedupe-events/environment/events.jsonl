@@ -1,0 +1,10 @@
+{"id":"evt-a","seq":1,"status":"open","note":"created"}
+{"id":"evt-b","seq":1,"status":"open","note":"created"}
+{"id":"evt-a","seq":2,"status":"open","note":"updated"}
+{"id":"evt-c","seq":1,"status":"closed","note":"done"}
+{"id":"evt-b","seq":3,"status":"closed","note":"resolved"}
+{"id":"evt-a","seq":3,"status":"closed","note":"final"}
+{"id":"evt-d","seq":1,"status":"open","note":"ignore-me"}
+{"id":"evt-d","seq":2,"status":"void","note":"cancelled"}
+{"id":"evt-e","seq":2,"status":"open","note":"later"}
+{"id":"evt-e","seq":1,"status":"open","note":"earlier"}

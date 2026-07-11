@@ -1,0 +1,10 @@
+{"invoice":"INV-001","account":"acme","revision":1,"status":"posted","kind":"charge","amount_cents":1250}
+{"invoice":"INV-001","account":"acme","revision":2,"status":"void","kind":"charge","amount_cents":1250}
+{"invoice":"INV-002","account":"acme","revision":1,"status":"posted","kind":"charge","amount_cents":700}
+{"invoice":"INV-003","account":"acme","revision":1,"status":"posted","kind":"credit","amount_cents":125}
+{"invoice":"INV-004","account":"bravo","revision":1,"status":"posted","kind":"charge","amount_cents":900}
+{"invoice":"INV-004","account":"bravo","revision":2,"status":"posted","kind":"charge","amount_cents":650}
+{"invoice":"INV-005","account":"bravo","revision":1,"status":"pending","kind":"charge","amount_cents":50}
+{"invoice":"INV-006","account":"charlie","revision":1,"status":"posted","kind":"credit","amount_cents":300}
+{"invoice":"INV-007","account":"charlie","revision":1,"status":"posted","kind":"charge","amount_cents":100}
+{"invoice":"INV-008","account":"delta","revision":1,"status":"void","kind":"credit","amount_cents":20}

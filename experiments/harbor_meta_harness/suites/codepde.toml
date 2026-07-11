@@ -1,0 +1,16 @@
+# Active optimization suite: CodePDE without cns1d (hung under Modal).
+# Probe: weak 0; strong scored 1.0 on advection/burgers before hang.
+tasks = [
+  "datasets/codepde/codepde-advection",
+  "datasets/codepde/codepde-burgers",
+  "datasets/codepde/codepde-darcy",
+  "datasets/codepde/codepde-reacdiff1d",
+]
+
+child_model = "openai/gpt-5.4-nano"
+environment = "modal"
+n_attempts = 1
+eval_budget = 8
+seed_harness = "tasks/select-harness/environment/harness.py"
+aggregate = "mean"
+child_timeout_sec = 900

@@ -144,7 +144,6 @@ class ProviderLLM:
         self.model = model
         self.api_key = api_key
         self.api_base = api_base
-        self.max_concurrent = max_concurrent
         self.total_input_tokens = 0
         self.total_output_tokens = 0
         self.total_cost = 0.0

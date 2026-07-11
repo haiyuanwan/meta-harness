@@ -1,15 +1,18 @@
 # Terminal-Bench 2 Setup
 
-This directory contains the Terminal-Bench 2 reference experiment from the paper. The shipped scripts use Harbor with the `runloop` environment:
+This directory contains the Terminal-Bench 2 reference experiment from the paper. The scripts default to Harbor's `runloop` environment and also support Modal:
 
 ```bash
 uv run harbor run ... -d "terminal-bench@2.0" -e runloop
+HARBOR_ENVIRONMENT=modal uv run bash scripts/run_eval.sh \
+  agents.baseline_kira:AgentHarness full 1 1 -i extract-elf
 ```
 
 ## Requirements
 
-- `ANTHROPIC_API_KEY` and `RUNLOOP_API_KEY` for the shipped path.
-- A Runloop/Daytona account with enough sandbox quota for the concurrency you plan to use.
+- `ANTHROPIC_API_KEY` for the default solver model.
+- One sandbox backend: `RUNLOOP_API_KEY` for Runloop, or Modal authentication.
+- Enough sandbox quota for the concurrency you plan to use.
 - The `terminal-bench` package installed from this directory's `pyproject.toml`.
 - Python 3.12.
 
@@ -29,6 +32,8 @@ The repo root ships `.env.example`, but the shell wrappers in `scripts/` source 
 
 The shipped `runloop` path requires both `ANTHROPIC_API_KEY` and `RUNLOOP_API_KEY`. For larger runs, `runloop` is the intended path.
 
+For Modal, run `modal token new` once or set `MODAL_TOKEN_ID` and `MODAL_TOKEN_SECRET`. Then set `HARBOR_ENVIRONMENT=modal`. Runloop remains the default.
+
 The default model in this example is `anthropic/claude-opus-4-6`. Override `HARBOR_MODEL` only if you intentionally want a non-default config.
 
 Default concurrency in this release is `50`. This setup is sensitive to Anthropic API throughput: API tier matters, sharing the same API key with other active projects makes runs slower, and many apparent failures at higher concurrency are actually timeout failures rather than reasoning failures.
@@ -46,6 +51,13 @@ Default concurrency in this release is `50`. This setup is sensitive to Anthropi
 uv run bash scripts/run_eval.sh agents.baseline_kira:AgentHarness full 1 1 -i extract-elf
 ```
 
+Modal:
+
+```bash
+HARBOR_ENVIRONMENT=modal uv run bash scripts/run_eval.sh \
+  agents.baseline_kira:AgentHarness full 1 1 -i extract-elf
+```
+
 ## Recommended Bring-Up Order
 
 For new harness ideas, do not start with the default 89x2 search loop.
@@ -60,18 +72,25 @@ Hard-subset example:
 uv run bash scripts/run_eval.sh agents.baseline_kira:AgentHarness hard 1 50
 ```
 
-The shell wrappers use `timeout` when available and fall back to `gtimeout` if GNU coreutils is installed on macOS. If neither command is present, the Harbor run still works but has no outer wall-clock timeout.
+The shell wrappers use `timeout` when available and fall back to `gtimeout` if GNU coreutils is installed on macOS. If neither command is present, the Harbor run still works but has no shell-level wall-clock timeout. `HARBOR_TIMEOUT_SECONDS` controls both the Python and shell layers and defaults to 28800 seconds (8 hours).
 
-## Local Vs Remote Sandbox
+Provider-free checks, runnable independently:
 
-As released, the scripts use `-e runloop`. If you want a different Harbor environment, change the environment flag in the shell wrappers or invoke `harbor run` directly with your local environment choice. The paper code does not ship a second local-sandbox path here.
+```bash
+uv run python -m unittest -v tests.test_meta_harness.AgentClassValidationTests
+uv run python -m unittest -v tests.test_meta_harness.TimeoutWiringTests
+```
+
+## Sandbox Backend
+
+`HARBOR_ENVIRONMENT` accepts `runloop` or `modal`; the default is `runloop`. Both are remote sandboxes. Modal does not require local Docker.
 
 ## Version Note
 
 The direct TB2 example dependencies are pinned in `pyproject.toml`:
 
-- `harbor==0.3.0`
-- `litellm==1.82.6`
+- `harbor[modal,runloop]==0.18.0`
+- `litellm==1.84.10`
 - `python-dotenv==1.2.2`
 - `tenacity==9.1.4`
 - `terminal-bench==0.2.18` from `harbor-framework/terminal-bench` commit `1a6ffa9674b571da0ed040c470cb40c4d85f9b9b`
