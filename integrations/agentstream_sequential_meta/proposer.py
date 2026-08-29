@@ -17,7 +17,7 @@ DISALLOWED_TOOLS = ["Bash", "WebSearch", "WebFetch", "Agent"]
 def build_proposer_prompt(
     *, benchmark: str, iteration: int, candidate_number: int, base_model: str
 ) -> str:
-    return f"""Run one Meta-Harness proposal for AgentStream Sequential.
+    return f"""Run one Meta-Harness proposal for a continual Sequential stream.
 
 Current search:
 - benchmark: {benchmark}
@@ -40,10 +40,10 @@ Files:
 Requirements:
 1. Inspect the history and state selectively and form one falsifiable hypothesis.
 2. Make a focused, generalizable mechanism change to candidate.py.
-3. Preserve CandidatePolicy and AgentHarness contracts and the fixed solver/tools.
+3. Preserve CandidateHarness(CandidateHarnessBase) and the fixed model client/tools.
 4. Do not hardcode task IDs, benchmark answers, hidden evaluator behavior, or data.
 5. Do not access grader, verifier, solution, private_test, secrets, or network.
-6. Do not call AgentStream's built-in run_evolver.
+6. Do not import or couple candidate.py to AgentStream/Exgentic internals.
 7. Do not create or edit any file except candidate.py.
 
 End with a short hypothesis and change summary. The controller, not you, evaluates

@@ -1,0 +1,2 @@
+# Harbor provides the optional trial lifecycle; its extra pins OpenSandbox SDK.
+harbor[opensandbox]==0.20.0

@@ -1,65 +1,45 @@
-"""Run benchmark-level Meta-Harness search on AgentStream Sequential streams."""
+"""Run continual Meta-Harness search on benchmark-native task streams."""
 
 from __future__ import annotations
 
 import argparse
-import contextlib
 import hashlib
 import json
 import os
 import shutil
-import sys
 import time
-from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 INTEGRATION_DIR = Path(__file__).resolve().parent
 REPO_ROOT = INTEGRATION_DIR.parents[1]
-DEFAULT_AGENTSTREAM_ROOT = Path(
-    os.environ.get(
-        "AGENTSTREAM_ROOT", "/mnt/public/users/wanhaiyuan/AgentStream/exgentic"
-    )
-)
-DEFAULT_RUNTIME_CACHE = Path(
-    os.environ.get(
-        "META_HARNESS_RUNTIME_CACHE", "/tmp/meta-harness-agentstream-sequential"
-    )
-)
-
-os.environ.setdefault("EXGENTIC_CACHE_DIR", str(DEFAULT_RUNTIME_CACHE / "exgentic"))
-os.environ.setdefault(
-    "EXGENTIC_LITELLM_CACHE_DIR", str(DEFAULT_RUNTIME_CACHE / "litellm")
-)
 os.environ.setdefault("LITELLM_LOCAL_MODEL_COST_MAP", "True")
 
 
-def _add_agentstream_paths(agentstream_root: Path) -> None:
-    for path in (
-        agentstream_root / "src",
-        agentstream_root / "scripts" / "utils",
-        REPO_ROOT,
-    ):
-        value = str(path.resolve())
-        if value not in sys.path:
-            sys.path.insert(0, value)
-
-
-_add_agentstream_paths(DEFAULT_AGENTSTREAM_ROOT)
-
-from exgentic.agents.harness.harness_store import HarnessStore
-from exgentic.core.types import ModelSettings
-from exgentic.interfaces.lib.api import evaluate
-from exgentic.interfaces.registry import AGENTS, RegistryEntry, load_benchmark
-from task_ordering import get_unified_task_order
-
-from integrations.agentstream_online.contract import (
+from .benchmark_backends import create_backend
+from .candidate_contract import (
     CandidateValidationError,
-    load_candidate_module,
     validate_candidate,
+    write_new_harness_state,
 )
+from .experiment_protocol import FormalPartition, build_formal_partitions
+from .hda_reporting import prepare_hda_review
 
+from .opensandbox_backend import (
+    DEFAULT_CACHE_PATH as DEFAULT_OPENSANDBOX_CACHE_PATH,
+)
+from .opensandbox_backend import (
+    DEFAULT_DOMAIN as DEFAULT_OPENSANDBOX_DOMAIN,
+)
+from .opensandbox_backend import (
+    DEFAULT_IMAGE as DEFAULT_OPENSANDBOX_IMAGE,
+)
+from .opensandbox_backend import (
+    OpenSandboxBackend,
+    OpenSandboxSettings,
+    sequential_task_order,
+)
 from .proposer import run_claude_proposer
 from .protocol import (
     BenchmarkSplit,
@@ -69,58 +49,52 @@ from .protocol import (
     select_winner,
     split_task_order,
 )
+from .sandbox_evaluation import BlockRun
+from .sandbox_evaluation import run_block as _run_block
+from .transfer_evaluation import run_transfer_matrix
 
-BASE_MODEL = "anthropic/Claude-Opus-4.8-C"
-PROPOSER_MODEL = "Claude-Opus-4.8-C"
-STORE_ID = "harness_sequential_global"
+__all__ = ["BlockRun"]
+
+BASE_MODEL = "anthropic/Claude-Opus-4.6-hq"
+PROPOSER_MODEL = "Claude-Opus-4.6-hq"
 
 BENCHMARK_REGISTRY: dict[str, dict[str, Any]] = {
-    "appworld": {
-        "bm_kwargs": {"subset": "test_challenge"},
-        "agent_kwargs": {"enable_tool_shortlisting": True, "max_selected_tools": 30},
+    "bfcl": {
+        "backend_kwargs": {"subset": "multi_turn_base"},
+        "agent_kwargs": {},
     },
-    "bfcl": {"bm_kwargs": {"subset": "multi_turn_base"}, "agent_kwargs": {}},
     "browsecompplus": {
-        "bm_kwargs": {"searcher_type": "faiss", "include_get_document": True},
+        "backend_kwargs": {
+            "searcher_type": "faiss",
+            "include_get_document": True,
+        },
+        "grader_kwargs": {},
         "agent_kwargs": {},
     },
-    "hle": {"bm_kwargs": {"runner": "direct"}, "agent_kwargs": {}},
-    "swebench": {
-        "bm_kwargs": {"subset": "princeton-nlp/SWE-bench_Verified"},
-        "agent_kwargs": {},
-    },
-    "tau2": {"bm_kwargs": {"subset": "telecom"}, "agent_kwargs": {}},
 }
 
 CONTRACT_TEXT = """# Sequential Meta-Harness Candidate Contract
 
-The complete running harness is candidate.py plus a controller-managed
-HarnessStore checkpoint. Edit candidate.py only.
+The complete running harness is candidate.py plus the controller-managed JSON
+checkpoint. Edit candidate.py only. It must export:
 
-candidate.py must export:
+    CandidateHarness(CandidateHarnessBase)
 
-1. CandidatePolicy(CandidatePolicyBase)
-2. AgentHarness(OnlineHarnessAgent)
-
-Allowed changes include prompt/context construction, selection among benchmark
-tools, and general memory/skill update logic.
+The candidate owns the agent loop, prompts, context policy, tool-use policy,
+and agent-visible memory updates. The fixed evaluator supplies ModelClient and
+benchmark-neutral ToolSpec/ToolResult values.
 
 Hard constraints:
 
-- keep the fixed solver model and supplied benchmark tools;
-- do not replace OnlineHarnessInstance or call AgentStream run_evolver;
+- keep the fixed solver ModelClient and supplied tools;
+- do not import AgentStream/Exgentic or benchmark implementations;
 - do not import subprocess, sockets, or HTTP clients;
 - do not access grader, verifier, solution, private_test, secrets, or ground truth;
 - do not hardcode benchmark names, task IDs, answers, or evaluator behavior;
 - do not edit incoming_harness_store.json or files under history/;
-- hooks must fail safely and generalize to unseen tasks.
+- the close() state update receives agent-visible trajectories only;
+- behavior must fail safely and generalize to unseen tasks.
 """
-
-
-@dataclass(frozen=True)
-class BlockRun:
-    rows: list[dict[str, Any]]
-    state_path: Path
 
 
 def _utc_now() -> str:
@@ -197,7 +171,7 @@ def _configure_provider(env_file: Path | None) -> dict[str, str]:
 
 
 def _benchmark_configs(
-    benchmarks: list[str], base_model: str
+    benchmarks: list[str], browse_grader_model: str
 ) -> dict[str, dict[str, Any]]:
     unknown = sorted(set(benchmarks) - set(BENCHMARK_REGISTRY))
     if unknown:
@@ -205,157 +179,36 @@ def _benchmark_configs(
     configs: dict[str, dict[str, Any]] = {}
     for slug in benchmarks:
         entry = json.loads(json.dumps(BENCHMARK_REGISTRY[slug]))
-        if slug == "tau2":
-            entry["bm_kwargs"]["user_simulator_model"] = base_model
-        elif slug == "browsecompplus":
-            entry["bm_kwargs"]["eval_model_id"] = base_model
-        elif slug == "hle":
-            entry["bm_kwargs"]["judge_model"] = base_model
+        if slug == "browsecompplus":
+            entry["grader_kwargs"]["grader_model"] = browse_grader_model
         configs[slug] = entry
     return configs
 
 
-def _register_candidate_agent(module: Any) -> None:
-    agent_class = module.AgentHarness
-    AGENTS[agent_class.slug_name] = RegistryEntry(
-        slug_name=agent_class.slug_name,
-        display_name=agent_class.display_name,
-        module=module.__name__,
-        attr="AgentHarness",
-        kind="agent",
-    )
+def _local_task_order(
+    configs: dict[str, dict[str, Any]], num_tasks: int, ordering_seed: int
+) -> list[tuple[str, str]]:
+    task_ids: dict[str, list[str]] = {}
+    for slug in sorted(configs):
+        backend = create_backend(slug, configs[slug])
+        try:
+            task_ids[slug] = backend.list_tasks()
+        finally:
+            backend.close()
+    return sequential_task_order(task_ids, num_tasks, ordering_seed)
 
 
-def _extract_token_counts(cost_reports: dict[str, Any]) -> tuple[int, int]:
-    input_tokens = 0
-    output_tokens = 0
-    for report in cost_reports.values():
-        if isinstance(report, dict):
-            input_tokens += int(report.get("input_tokens", 0) or 0)
-            output_tokens += int(report.get("output_tokens", 0) or 0)
-        else:
-            input_tokens += int(getattr(report, "input_tokens", 0) or 0)
-            output_tokens += int(getattr(report, "output_tokens", 0) or 0)
-    return input_tokens, output_tokens
-
-
-def _session_row(
-    *, task_id: str, split_name: str, session_result: Any
-) -> dict[str, Any]:
-    score = session_result.score
-    if score is None:
-        score = 1.0 if session_result.success else 0.0
-    input_tokens, output_tokens = _extract_token_counts(session_result.cost_reports)
-    return {
-        "task_id": task_id,
-        "split": split_name,
-        "score": float(score),
-        "success": bool(session_result.success),
-        "status": (
-            session_result.status.value
-            if hasattr(session_result.status, "value")
-            else str(session_result.status)
-        ),
-        "steps": session_result.steps,
-        "action_count": session_result.action_count,
-        "agent_cost": float(session_result.agent_cost or 0.0),
-        "execution_time": session_result.execution_time,
-        "input_tokens": input_tokens,
-        "output_tokens": output_tokens,
-    }
-
-
-def _copy_public_rollouts(evaluation_dir: Path, public_dir: Path) -> None:
-    trajectories = sorted(
-        evaluation_dir.rglob("trajectory.jsonl"),
-        key=lambda path: (path.stat().st_mtime_ns, str(path)),
-    )
-    for index, trajectory in enumerate(trajectories):
-        session_dir = trajectory.parent
-        target = public_dir / "rollouts" / f"{index:04d}"
-        target.mkdir(parents=True, exist_ok=True)
-        safe_files = {
-            session_dir / "trajectory.jsonl": target / "trajectory.jsonl",
-            session_dir / "agent" / "online_candidate_trace.txt": (
-                target / "online_candidate_trace.txt"
-            ),
-            session_dir / "agent" / "agent.log": target / "agent.log",
-            session_dir / "agent" / "harness_state.md": target / "harness_state.md",
-        }
-        for source, destination in safe_files.items():
-            if source.is_file():
-                shutil.copy2(source, destination)
-
-
-def _run_block(
-    *,
-    benchmark_slug: str,
-    task_ids: list[str],
-    split_names: list[str],
-    candidate_path: Path,
-    input_state_path: Path,
-    output_state_path: Path,
-    evaluation_dir: Path,
-    public_dir: Path | None,
-    config: dict[str, Any],
-    base_model: str,
-    max_tokens: int,
-    embedding_model: str,
-) -> BlockRun:
-    if len(task_ids) != len(split_names):
-        raise ValueError("task_ids and split_names must have the same length")
-
-    HarnessStore.reset_all()
-    store = HarnessStore.get_or_create(shuffle_mode="sequential")
-    store.load_checkpoint(str(input_state_path))
-    module = load_candidate_module(candidate_path)
-    _register_candidate_agent(module)
-    model_settings = ModelSettings(max_tokens=max_tokens)
-    benchmark = load_benchmark(benchmark_slug)(**config["bm_kwargs"])
-    agent = module.AgentHarness(
-        candidate_path=str(candidate_path.resolve()),
-        model=base_model,
-        evolver_model=base_model,
-        shuffle_mode="sequential",
-        benchmark_id=benchmark_slug,
-        embedding_model=embedding_model,
-        runner="direct",
-        model_settings=model_settings,
-        **config.get("agent_kwargs", {}),
-    )
-    try:
-        results = evaluate(
-            benchmark=benchmark,
-            agent=agent,
-            task_ids=task_ids,
-            max_workers=1,
-            output_dir=str(evaluation_dir),
-        )
-    finally:
-        with contextlib.suppress(Exception):
-            benchmark.close()
-
-    if len(results.session_results) != len(task_ids):
-        raise RuntimeError(
-            f"Expected {len(task_ids)} session results, got "
-            f"{len(results.session_results)}"
-        )
-    live_store = HarnessStore.list_stores().get(STORE_ID)
-    if live_store is None:
-        raise RuntimeError(f"Missing persistent store {STORE_ID}")
-    output_state_path.parent.mkdir(parents=True, exist_ok=True)
-    live_store.save_checkpoint(str(output_state_path))
-    rows = [
-        _session_row(task_id=task_id, split_name=split_name, session_result=result)
-        for task_id, split_name, result in zip(
-            task_ids, split_names, results.session_results, strict=True
-        )
-    ]
-    if public_dir is not None:
-        public_dir.mkdir(parents=True, exist_ok=True)
-        _atomic_write_json(public_dir / "metrics.json", {"tasks": rows})
-        _copy_public_rollouts(evaluation_dir, public_dir)
-    return BlockRun(rows=rows, state_path=output_state_path)
+def _local_task_inventory(
+    configs: dict[str, dict[str, Any]],
+) -> dict[str, list[str]]:
+    task_ids: dict[str, list[str]] = {}
+    for slug in sorted(configs):
+        backend = create_backend(slug, configs[slug])
+        try:
+            task_ids[slug] = backend.list_tasks()
+        finally:
+            backend.close()
+    return task_ids
 
 
 def _candidate_result(
@@ -498,7 +351,16 @@ def _initialize_run(
         saved = json.loads(experiment_path.read_text(encoding="utf-8"))
         comparison_keys = (
             "mode",
+            "harness_runtime",
+            "benchmark_runtime",
+            "execution_backend",
+            "execution_runtime",
             "benchmarks",
+            "benchmark_configs",
+            "partition_profile",
+            "run_transfer_matrix",
+            "bootstrap_samples",
+            "bootstrap_seed",
             "task_order",
             "splits",
             "iterations",
@@ -519,10 +381,7 @@ def _initialize_run(
         raise FileExistsError(f"Output directory is non-empty: {output_dir}")
     current_dir.mkdir(parents=True, exist_ok=True)
     shutil.copy2(INTEGRATION_DIR / "candidate.py", candidate_path)
-    HarnessStore.reset_all()
-    HarnessStore.get_or_create(shuffle_mode="sequential").save_checkpoint(
-        str(state_path)
-    )
+    write_new_harness_state(state_path)
     validate_candidate(candidate_path, state_path)
     _atomic_write_json(experiment_path, experiment)
     progress = {
@@ -615,30 +474,165 @@ def _search_task_lists(split: BenchmarkSplit) -> tuple[list[str], list[str]]:
 
 
 def run(args: argparse.Namespace) -> None:
-    agentstream_root = Path(args.agentstream_root).resolve()
-    _add_agentstream_paths(agentstream_root)
     output_dir = Path(args.output_dir).resolve()
     env_file = Path(args.env_file).resolve() if args.env_file else None
     provider_env = _configure_provider(env_file)
-    if args.tau2_data_dir:
-        tau2_data = str(Path(args.tau2_data_dir).resolve())
-        os.environ["TAU2_DATA_DIR"] = tau2_data
-        provider_env["TAU2_DATA_DIR"] = tau2_data
-
     benchmarks = [item.strip() for item in args.benchmarks.split(",") if item.strip()]
-    configs = _benchmark_configs(benchmarks, args.base_model)
-    counts = _split_counts(args)
-    task_order = get_unified_task_order(
-        configs, args.num_tasks, args.seed, "sequential"
+    partition_profile = getattr(args, "partition_profile", "legacy")
+    run_hidden_transfer = bool(getattr(args, "run_transfer_matrix", False))
+    bootstrap_samples = int(getattr(args, "bootstrap_samples", 10_000))
+    bootstrap_seed = int(getattr(args, "bootstrap_seed", 2026))
+    if bootstrap_samples < 1:
+        raise ValueError("--bootstrap-samples must be positive")
+    if run_hidden_transfer and partition_profile != "transfer-hda":
+        raise ValueError(
+            "--run-transfer-matrix requires --partition-profile transfer-hda"
+        )
+    configs = _benchmark_configs(
+        benchmarks,
+        getattr(args, "browse_grader_model", BASE_MODEL),
     )
-    splits = split_task_order(task_order, counts)
+    tasks_per_worker = int(getattr(args, "sandbox_tasks_per_worker", 10))
+    if tasks_per_worker < 1:
+        raise ValueError("--sandbox-tasks-per-worker must be positive")
+    for config in configs.values():
+        config["sandbox_tasks_per_worker"] = tasks_per_worker
+    counts = _split_counts(args) if partition_profile == "legacy" else None
+    execution_backend = getattr(args, "execution_backend", "local")
+    browse_assets_dir = getattr(args, "browse_assets_dir", None)
+    if (
+        browse_assets_dir
+        and execution_backend == "local"
+        and "browsecompplus" in configs
+    ):
+        configs["browsecompplus"]["backend_kwargs"]["assets_dir"] = str(
+            Path(browse_assets_dir).resolve()
+        )
+    sandbox_backend: OpenSandboxBackend | None = None
+    formal_partitions: list[FormalPartition] | None = None
+    execution_runtime: dict[str, Any]
+    if execution_backend in {"opensandbox", "harbor"}:
+        cache_path = Path(
+            getattr(
+                args,
+                "opensandbox_runtime_cache",
+                str(DEFAULT_OPENSANDBOX_CACHE_PATH),
+            )
+        ).expanduser()
+        if not cache_path.is_absolute():
+            cache_path = REPO_ROOT / cache_path
+        settings = OpenSandboxSettings(
+            domain=getattr(args, "opensandbox_domain", None)
+            or os.environ.get("OPENSANDBOX_DOMAIN")
+            or DEFAULT_OPENSANDBOX_DOMAIN,
+            api_key=getattr(args, "opensandbox_api_key", None)
+            or os.environ.get("OPENSANDBOX_API_KEY", ""),
+            protocol=getattr(args, "opensandbox_protocol", "http"),
+            use_server_proxy=getattr(args, "opensandbox_use_server_proxy", True),
+            request_timeout_sec=getattr(
+                args, "opensandbox_request_timeout", 600
+            ),
+            ready_timeout_sec=getattr(args, "opensandbox_ready_timeout", 1800),
+            sandbox_timeout_sec=getattr(
+                args, "opensandbox_sandbox_timeout", 7200
+            ),
+            command_timeout_sec=getattr(
+                args, "opensandbox_command_timeout", 3600
+            ),
+            snapshot_ready_timeout_sec=getattr(
+                args, "opensandbox_snapshot_timeout", 1800
+            ),
+            image=getattr(args, "opensandbox_image", DEFAULT_OPENSANDBOX_IMAGE),
+            runtime_mode=getattr(args, "opensandbox_runtime_mode", "auto"),
+            runtime_cache_path=cache_path.resolve(),
+            cpus=getattr(args, "opensandbox_cpus", 4),
+            memory=getattr(args, "opensandbox_memory", "16Gi"),
+        )
+        backend_class = OpenSandboxBackend
+        if execution_backend == "harbor":
+            from .harbor_backend import HarborOpenSandboxBackend
+
+            backend_class = HarborOpenSandboxBackend
+        sandbox_backend = backend_class(
+            settings=settings,
+            meta_harness_root=REPO_ROOT,
+            provider_env=provider_env,
+        )
+        execution_runtime = sandbox_backend.public_config()
+        if getattr(args, "prepare_only", False):
+            prepared = sandbox_backend.prepare(benchmarks)
+            print(
+                json.dumps(
+                    {
+                        "prepared": {
+                            slug: {
+                                "snapshot_id": snapshot.snapshot_id,
+                                "identity": snapshot.identity,
+                            }
+                            for slug, snapshot in prepared.items()
+                        },
+                        "runtime": execution_runtime,
+                    },
+                    ensure_ascii=False,
+                    indent=2,
+                )
+            )
+            return
+        if partition_profile == "transfer-hda":
+            inventories = sandbox_backend.get_task_inventory(configs)
+            formal_partitions = build_formal_partitions(inventories, args.seed)
+            splits = [partition.split for partition in formal_partitions]
+            task_order = [
+                (split.benchmark, task_id)
+                for split in splits
+                for task_id in split.all_tasks
+            ]
+        else:
+            task_order = sandbox_backend.get_task_order(
+                configs, args.num_tasks, args.seed
+            )
+        block_runner = sandbox_backend.run_block
+    elif execution_backend == "local":
+        if getattr(args, "prepare_only", False):
+            raise ValueError(
+                "--prepare-only requires --execution-backend opensandbox or harbor"
+            )
+        execution_runtime = {"runner": "benchmark-native local"}
+        if partition_profile == "transfer-hda":
+            inventories = _local_task_inventory(configs)
+            formal_partitions = build_formal_partitions(inventories, args.seed)
+            splits = [partition.split for partition in formal_partitions]
+            task_order = [
+                (split.benchmark, task_id)
+                for split in splits
+                for task_id in split.all_tasks
+            ]
+        else:
+            task_order = _local_task_order(configs, args.num_tasks, args.seed)
+        block_runner = _run_block
+    else:
+        raise ValueError(f"Unsupported execution backend: {execution_backend}")
+    if partition_profile == "legacy":
+        assert counts is not None
+        splits = split_task_order(task_order, counts)
+    else:
+        assert formal_partitions is not None
     experiment = {
         "created_at": _utc_now(),
         "mode": "sequential_meta_harness",
+        "harness_runtime": "benchmark_neutral_candidate_v1",
+        "benchmark_runtime": "benchmark_native_backend_v1",
+        "execution_backend": execution_backend,
+        "execution_runtime": execution_runtime,
         "selection_seed": 42,
         "ordering_seed": args.seed,
         "num_tasks_per_benchmark": args.num_tasks,
         "benchmarks": benchmarks,
+        "benchmark_configs": configs,
+        "partition_profile": partition_profile,
+        "run_transfer_matrix": run_hidden_transfer,
+        "bootstrap_samples": bootstrap_samples,
+        "bootstrap_seed": bootstrap_seed,
         "task_order": [[slug, task_id] for slug, task_id in task_order],
         "splits": [split.to_manifest() for split in splits],
         "iterations": args.iterations,
@@ -647,11 +641,40 @@ def run(args: argparse.Namespace) -> None:
         "proposer_model": args.proposer_model,
         "test_visible_to_proposer": False,
         "evolve_after_every_task": False,
-        "agentstream_root": str(agentstream_root),
+        "stream_protocol_reference": "AgentStream Sequential ordering semantics",
     }
     current_candidate, current_state, progress = _initialize_run(
         output_dir=output_dir, experiment=experiment, resume=args.resume
     )
+    if formal_partitions is not None:
+        private_manifest_dir = output_dir / "private_manifests"
+        private_manifest_dir.mkdir(parents=True, exist_ok=True)
+        commitments = {
+            partition.benchmark: partition.public_commitment()
+            for partition in formal_partitions
+        }
+        _atomic_write_json(
+            output_dir / "public_split_commitment.json", commitments
+        )
+        for partition in formal_partitions:
+            _atomic_write_json(
+                private_manifest_dir / f"{partition.benchmark}.json",
+                partition.private_manifest(),
+            )
+        checkpoint_zero = output_dir / "checkpoints" / "H0"
+        if not checkpoint_zero.exists():
+            checkpoint_candidate, checkpoint_state = _copy_harness(
+                current_candidate, current_state, checkpoint_zero
+            )
+            _atomic_write_json(
+                checkpoint_zero / "manifest.json",
+                {
+                    "checkpoint": "H0",
+                    "after_benchmark": None,
+                    "candidate_sha256": _sha256(checkpoint_candidate),
+                    "state_sha256": _sha256(checkpoint_state),
+                },
+            )
     next_benchmark = int(progress.get("next_benchmark_index", 0))
     test_metrics_path = output_dir / "private_metrics" / "test_metrics.jsonl"
 
@@ -734,7 +757,7 @@ def run(args: argparse.Namespace) -> None:
             incoming_candidate, incoming_state, baseline_dir / "input"
         )
         baseline_output_state = baseline_dir / "output" / "harness_store.json"
-        baseline_run = _run_block(
+        baseline_run = block_runner(
             benchmark_slug=split.benchmark,
             task_ids=search_task_ids,
             split_names=search_split_names,
@@ -833,7 +856,7 @@ def run(args: argparse.Namespace) -> None:
                     shutil.copy2(incoming_state, evaluated_state)
                     output_state = candidate_dir / "output" / "harness_store.json"
                     try:
-                        block = _run_block(
+                        block = block_runner(
                             benchmark_slug=split.benchmark,
                             task_ids=search_task_ids,
                             split_names=search_split_names,
@@ -918,43 +941,64 @@ def run(args: argparse.Namespace) -> None:
                 "updated_at": _utc_now(),
             },
         )
-        private_test_dir = benchmark_dir / "private_test"
-        test_state = private_test_dir / "output" / "harness_store.json"
-        test_run = _run_block(
-            benchmark_slug=split.benchmark,
-            task_ids=list(split.test),
-            split_names=["test"] * len(split.test),
-            candidate_path=winner_candidate,
-            input_state_path=winner_state,
-            output_state_path=test_state,
-            evaluation_dir=private_test_dir / "evaluation",
-            public_dir=None,
-            config=configs[split.benchmark],
-            base_model=args.base_model,
-            max_tokens=args.max_tokens,
-            embedding_model=args.embedding_model,
-        )
-        test_score = sum(row["score"] for row in test_run.rows) / len(test_run.rows)
-        test_record = {
-            "timestamp": _utc_now(),
-            "benchmark_index": benchmark_index,
-            "benchmark": split.benchmark,
-            "winner": winner.candidate_id,
-            "validation_score": winner.validation_score,
-            "test_score": test_score,
-            "test_tasks": test_run.rows,
-            "candidate_sha256": _sha256(winner_candidate),
-            "state_before_test_sha256": _sha256(winner_state),
-            "state_after_test_sha256": _sha256(test_state),
-        }
-        _atomic_write_json(private_test_dir / "metrics.json", test_record)
-        _append_jsonl(test_metrics_path, test_record)
+        test_score: float | None = None
+        if partition_profile == "legacy":
+            private_test_dir = benchmark_dir / "private_test"
+            test_state = private_test_dir / "output" / "harness_store.json"
+            test_run = block_runner(
+                benchmark_slug=split.benchmark,
+                task_ids=list(split.test),
+                split_names=["test"] * len(split.test),
+                candidate_path=winner_candidate,
+                input_state_path=winner_state,
+                output_state_path=test_state,
+                evaluation_dir=private_test_dir / "evaluation",
+                public_dir=None,
+                config=configs[split.benchmark],
+                base_model=args.base_model,
+                max_tokens=args.max_tokens,
+                embedding_model=args.embedding_model,
+            )
+            test_score = sum(row["score"] for row in test_run.rows) / len(
+                test_run.rows
+            )
+            test_record = {
+                "timestamp": _utc_now(),
+                "benchmark_index": benchmark_index,
+                "benchmark": split.benchmark,
+                "winner": winner.candidate_id,
+                "validation_score": winner.validation_score,
+                "test_score": test_score,
+                "test_tasks": test_run.rows,
+                "candidate_sha256": _sha256(winner_candidate),
+                "state_before_test_sha256": _sha256(winner_state),
+                "state_after_test_sha256": _sha256(test_state),
+            }
+            _atomic_write_json(private_test_dir / "metrics.json", test_record)
+            _append_jsonl(test_metrics_path, test_record)
 
+        # Hidden test execution is observational only. Its state must not flow
+        # into the next benchmark, otherwise transfer is confounded by learning
+        # on hidden tasks.
         outgoing_candidate, outgoing_state = _copy_harness(
-            winner_candidate, test_state, benchmark_dir / "outgoing"
+            winner_candidate, winner_state, benchmark_dir / "outgoing"
         )
         _atomic_copy(outgoing_candidate, current_candidate)
         _atomic_copy(outgoing_state, current_state)
+        if formal_partitions is not None:
+            checkpoint = output_dir / "checkpoints" / f"H{benchmark_index + 1}"
+            checkpoint_candidate, checkpoint_state = _copy_harness(
+                outgoing_candidate, outgoing_state, checkpoint
+            )
+            _atomic_write_json(
+                checkpoint / "manifest.json",
+                {
+                    "checkpoint": f"H{benchmark_index + 1}",
+                    "after_benchmark": split.benchmark,
+                    "candidate_sha256": _sha256(checkpoint_candidate),
+                    "state_sha256": _sha256(checkpoint_state),
+                },
+            )
         _atomic_write_json(
             benchmark_dir / "manifest.json",
             {
@@ -978,9 +1022,34 @@ def run(args: argparse.Namespace) -> None:
                 "updated_at": _utc_now(),
             },
         )
+        test_text = f" test={test_score:.3f}" if test_score is not None else ""
         print(
-            f"  winner={winner.candidate_id} val={winner.validation_score:.3f} "
-            f"test={test_score:.3f}"
+            f"  winner={winner.candidate_id} val={winner.validation_score:.3f}"
+            f"{test_text}"
+        )
+
+    transfer_result: dict[str, Any] | None = None
+    if run_hidden_transfer:
+        assert formal_partitions is not None
+        matrix_path = output_dir / "transfer_matrix" / "matrix.json"
+        if matrix_path.is_file():
+            existing_matrix = json.loads(matrix_path.read_text(encoding="utf-8"))
+            if existing_matrix.get("complete"):
+                transfer_result = existing_matrix
+        if transfer_result is None:
+            transfer_result = run_transfer_matrix(
+                output_dir=output_dir,
+                partitions=formal_partitions,
+                block_runner=block_runner,
+                configs=configs,
+                base_model=args.base_model,
+                max_tokens=args.max_tokens,
+                embedding_model=args.embedding_model,
+                bootstrap_samples=bootstrap_samples,
+                bootstrap_seed=bootstrap_seed,
+            )
+        prepare_hda_review(
+            output_dir=output_dir, transfer_result=transfer_result
         )
 
     test_records = []
@@ -990,23 +1059,46 @@ def run(args: argparse.Namespace) -> None:
             for line in test_metrics_path.read_text(encoding="utf-8").splitlines()
             if line.strip()
         ]
-    summary = {
-        "completed_at": _utc_now(),
-        "benchmarks": len(test_records),
-        "mean_test_score": (
-            sum(record["test_score"] for record in test_records) / len(test_records)
-            if test_records
-            else None
-        ),
-        "per_benchmark": {
-            record["benchmark"]: {
-                "winner": record["winner"],
-                "validation_score": record["validation_score"],
-                "test_score": record["test_score"],
-            }
-            for record in test_records
-        },
-    }
+    if partition_profile == "transfer-hda":
+        summary = {
+            "completed_at": _utc_now(),
+            "partition_profile": partition_profile,
+            "evolution_benchmarks": len(splits),
+            "checkpoints": ["H0", "H1", "H2"],
+            "transfer_matrix_complete": transfer_result is not None,
+            "transfer_cell_means": (
+                {
+                    name: cell["mean_score"]
+                    for name, cell in transfer_result["cells"].items()
+                }
+                if transfer_result is not None
+                else None
+            ),
+            "deltas": (
+                transfer_result["deltas"]
+                if transfer_result is not None
+                else None
+            ),
+        }
+    else:
+        summary = {
+            "completed_at": _utc_now(),
+            "benchmarks": len(test_records),
+            "mean_test_score": (
+                sum(record["test_score"] for record in test_records)
+                / len(test_records)
+                if test_records
+                else None
+            ),
+            "per_benchmark": {
+                record["benchmark"]: {
+                    "winner": record["winner"],
+                    "validation_score": record["validation_score"],
+                    "test_score": record["test_score"],
+                }
+                for record in test_records
+            },
+        }
     _atomic_write_json(output_dir / "private_metrics" / "summary.json", summary)
     print(json.dumps(summary, ensure_ascii=False, indent=2))
 
@@ -1014,13 +1106,19 @@ def run(args: argparse.Namespace) -> None:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description=(
-            "Run Meta-Harness search inside each AgentStream Sequential benchmark"
+            "Run continual Meta-Harness search over benchmark-native task streams"
         )
     )
     parser.add_argument("--output-dir", required=True)
+    parser.add_argument("--benchmarks", default="bfcl,browsecompplus")
     parser.add_argument(
-        "--benchmarks", default="hle,bfcl,browsecompplus,appworld,swebench,tau2"
+        "--partition-profile",
+        choices=("legacy", "transfer-hda"),
+        default="legacy",
     )
+    parser.add_argument("--run-transfer-matrix", action="store_true")
+    parser.add_argument("--bootstrap-samples", type=int, default=10_000)
+    parser.add_argument("--bootstrap-seed", type=int, default=2026)
     parser.add_argument("--num-tasks", type=int, default=50)
     parser.add_argument("--train-tasks", type=int)
     parser.add_argument("--validation-tasks", type=int)
@@ -1030,6 +1128,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--candidates-per-iteration", type=int, default=1)
     parser.add_argument("--base-model", default=BASE_MODEL)
     parser.add_argument("--proposer-model", default=PROPOSER_MODEL)
+    parser.add_argument("--browse-grader-model", default=BASE_MODEL)
+    parser.add_argument("--browse-assets-dir")
     parser.add_argument("--max-tokens", type=int, default=4096)
     parser.add_argument("--embedding-model", default="all-MiniLM-L6-v2")
     parser.add_argument("--proposer-timeout", type=int, default=2400)
@@ -1041,9 +1141,41 @@ def build_parser() -> argparse.ArgumentParser:
             else "claude"
         ),
     )
-    parser.add_argument("--agentstream-root", default=str(DEFAULT_AGENTSTREAM_ROOT))
     parser.add_argument("--env-file")
-    parser.add_argument("--tau2-data-dir")
+    parser.add_argument(
+        "--execution-backend",
+        choices=("opensandbox", "harbor", "local"),
+        default="opensandbox",
+    )
+    parser.add_argument("--prepare-only", action="store_true")
+    parser.add_argument("--opensandbox-domain")
+    parser.add_argument("--opensandbox-api-key")
+    parser.add_argument(
+        "--opensandbox-protocol", choices=("http", "https"), default="http"
+    )
+    parser.add_argument(
+        "--opensandbox-use-server-proxy",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+    )
+    parser.add_argument("--opensandbox-image", default=DEFAULT_OPENSANDBOX_IMAGE)
+    parser.add_argument(
+        "--opensandbox-runtime-mode",
+        choices=("auto", "require", "rebuild"),
+        default="auto",
+    )
+    parser.add_argument(
+        "--opensandbox-runtime-cache",
+        default=str(DEFAULT_OPENSANDBOX_CACHE_PATH),
+    )
+    parser.add_argument("--opensandbox-cpus", type=int, default=4)
+    parser.add_argument("--opensandbox-memory", default="16Gi")
+    parser.add_argument("--sandbox-tasks-per-worker", type=int, default=10)
+    parser.add_argument("--opensandbox-request-timeout", type=int, default=600)
+    parser.add_argument("--opensandbox-ready-timeout", type=int, default=1800)
+    parser.add_argument("--opensandbox-sandbox-timeout", type=int, default=7200)
+    parser.add_argument("--opensandbox-command-timeout", type=int, default=3600)
+    parser.add_argument("--opensandbox-snapshot-timeout", type=int, default=1800)
     parser.add_argument("--resume", action="store_true")
     return parser
 

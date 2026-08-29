@@ -112,11 +112,11 @@ def test_control_run_transfers_state_and_keeps_test_private(
 ) -> None:
     task_order = [
         *(("bfcl", f"b{i}") for i in range(4)),
-        *(("tau2", f"t{i}") for i in range(4)),
+        *(("browsecompplus", f"w{i}") for i in range(4)),
     ]
     monkeypatch.setattr(
         controller,
-        "get_unified_task_order",
+        "_local_task_order",
         lambda *args, **kwargs: task_order,
     )
     monkeypatch.setattr(controller, "_configure_provider", lambda env_file: {})
@@ -162,11 +162,9 @@ def test_control_run_transfers_state_and_keeps_test_private(
     monkeypatch.setattr(controller, "_run_block", fake_run_block)
     output_dir = tmp_path / "run"
     args = argparse.Namespace(
-        agentstream_root=str(tmp_path / "agentstream"),
         output_dir=str(output_dir),
         env_file=None,
-        tau2_data_dir=None,
-        benchmarks="bfcl,tau2",
+        benchmarks="bfcl,browsecompplus",
         num_tasks=4,
         train_tasks=2,
         validation_tasks=1,
@@ -189,16 +187,19 @@ def test_control_run_transfers_state_and_keeps_test_private(
         (
             output_dir
             / "benchmarks"
-            / "001_tau2"
+            / "001_browsecompplus"
             / "incoming"
             / "harness_store.json"
         ).read_text(encoding="utf-8")
     )
-    assert "|bfcl:train,train,validation|bfcl:test" in second_incoming["memory"]
+    assert second_incoming["memory"].endswith("|bfcl:train,train,validation")
+    assert "|bfcl:test" not in second_incoming["memory"]
     current = json.loads(
         (output_dir / "current" / "harness_store.json").read_text(encoding="utf-8")
     )
-    assert current["session_count"] == 8
+    assert current["session_count"] == 6
+    assert "|bfcl:test" not in current["memory"]
+    assert "|browsecompplus:test" not in current["memory"]
     global_text = "\n".join(
         path.read_text(encoding="utf-8")
         for path in (output_dir / "global_history").rglob("*")
@@ -209,3 +210,92 @@ def test_control_run_transfers_state_and_keeps_test_private(
         output_dir / "private_metrics" / "test_metrics.jsonl"
     ).read_text(encoding="utf-8")
     assert private_rows.count('"test_score"') == 2
+
+
+def test_transfer_profile_commits_full_pools_and_writes_h0_h1_h2(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(
+        controller,
+        "_local_task_inventory",
+        lambda configs: {
+            "bfcl": [f"b{i}" for i in range(200)],
+            "browsecompplus": [f"q{i}" for i in range(830)],
+        },
+    )
+    monkeypatch.setattr(controller, "_configure_provider", lambda env_file: {})
+    calls = []
+
+    def fake_run_block(**kwargs: Any) -> BlockRun:
+        calls.append((kwargs["benchmark_slug"], list(kwargs["split_names"])))
+        state = json.loads(Path(kwargs["input_state_path"]).read_text())
+        state["session_count"] += len(kwargs["task_ids"])
+        output = Path(kwargs["output_state_path"])
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_text(json.dumps(state))
+        rows = [
+            {
+                "task_id": task_id,
+                "split": split,
+                "score": 1.0,
+                "success": True,
+                "status": "success",
+                "steps": 1,
+                "action_count": 1,
+                "agent_cost": 0.0,
+                "execution_time": 0.1,
+                "input_tokens": 1,
+                "output_tokens": 1,
+            }
+            for task_id, split in zip(
+                kwargs["task_ids"], kwargs["split_names"], strict=True
+            )
+        ]
+        public = kwargs["public_dir"]
+        if public is not None:
+            Path(public).mkdir(parents=True, exist_ok=True)
+            (Path(public) / "metrics.json").write_text(json.dumps({"tasks": rows}))
+        return BlockRun(rows=rows, state_path=output)
+
+    monkeypatch.setattr(controller, "_run_block", fake_run_block)
+    output_dir = tmp_path / "formal"
+    controller.run(
+        argparse.Namespace(
+            output_dir=str(output_dir),
+            env_file=None,
+            benchmarks="bfcl,browsecompplus",
+            partition_profile="transfer-hda",
+            num_tasks=50,
+            train_tasks=None,
+            validation_tasks=None,
+            test_tasks=None,
+            seed=44,
+            iterations=0,
+            candidates_per_iteration=1,
+            base_model="model",
+            proposer_model="proposer",
+            max_tokens=128,
+            embedding_model="unused",
+            claude_bin="claude",
+            proposer_timeout=1,
+            resume=False,
+        )
+    )
+
+    assert [len(splits) for _, splits in calls] == [30, 30]
+    assert all("test" not in splits for _, splits in calls)
+    counts = [
+        json.loads(
+            (output_dir / "checkpoints" / name / "harness_store.json").read_text()
+        )["session_count"]
+        for name in ("H0", "H1", "H2")
+    ]
+    assert counts == [0, 30, 60]
+    commitment_text = (output_dir / "public_split_commitment.json").read_text()
+    assert '"hidden": [' not in commitment_text
+    bfcl_private = json.loads(
+        (output_dir / "private_manifests" / "bfcl.json").read_text()
+    )
+    assert len(bfcl_private["hidden"]) == 50
+    assert len(bfcl_private["audit"]) == 120
+    assert not (output_dir / "private_metrics" / "test_metrics.jsonl").exists()

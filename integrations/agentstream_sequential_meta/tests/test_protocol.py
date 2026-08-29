@@ -38,20 +38,20 @@ def _candidate(
 def test_split_preserves_sequential_blocks_and_order() -> None:
     order = [
         *(('bfcl', f'b{i}') for i in range(5)),
-        *(('tau2', f't{i}') for i in range(5)),
+        *(('browsecompplus', f'q{i}') for i in range(5)),
     ]
 
     splits = split_task_order(order, SplitCounts(train=2, validation=2, test=1))
 
-    assert [split.benchmark for split in splits] == ['bfcl', 'tau2']
+    assert [split.benchmark for split in splits] == ['bfcl', 'browsecompplus']
     assert splits[0].train == ('b0', 'b1')
     assert splits[0].validation == ('b2', 'b3')
     assert splits[0].test == ('b4',)
-    assert splits[1].all_tasks == tuple(f't{i}' for i in range(5))
+    assert splits[1].all_tasks == tuple(f'q{i}' for i in range(5))
 
 
 def test_split_rejects_non_contiguous_benchmark() -> None:
-    order = [('bfcl', 'b0'), ('tau2', 't0'), ('bfcl', 'b1')]
+    order = [('bfcl', 'b0'), ('browsecompplus', 'q0'), ('bfcl', 'b1')]
 
     with pytest.raises(ValueError, match='not contiguous'):
         split_task_order(order, SplitCounts(train=1, validation=1, test=1))

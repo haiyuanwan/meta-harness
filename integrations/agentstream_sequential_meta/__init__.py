@@ -1,1 +1,1 @@
-"""Benchmark-level Meta-Harness search over AgentStream Sequential streams."""
+"""Continual Meta-Harness search over benchmark-native task streams."""

@@ -218,3 +218,4 @@ reference_examples/terminal_bench_2/offline_experience/
 jobs/
 trace.jsonl
 experimental/harbor_meta_harness/datasets/
+.meta-harness/
