@@ -5,6 +5,8 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -71,40 +73,93 @@ class BrowseCompPlusBackend(BenchmarkBackend):
             return
         import safetensors  # noqa: F401
         import torch  # noqa: F401
-        from searcher.searchers import SearcherType
 
-        searcher_class = SearcherType.get_searcher_class(self.searcher_type)
-        parser = argparse.ArgumentParser(add_help=False)
-        searcher_class.parse_args(parser)
-        if self.searcher_type == "bm25":
-            searcher_args: dict[str, Any] = {
-                "index_path": str(self.assets_dir / "indexes" / "bm25")
-            }
-        else:
-            model_dir = self.searcher_model_name.lower().split("/")[-1]
-            index_dir = self.assets_dir / "indexes" / model_dir
-            if not index_dir.is_dir():
-                raise FileNotFoundError(f"BrowseCompPlus index is missing: {index_dir}")
-            searcher_args = {
-                "index_path": str(index_dir / "corpus.shard*_of_4.pkl"),
-                "model_name": self.searcher_model_name,
-                "normalize": self.normalize_search,
-            }
-        cli: list[str] = []
-        for key, value in searcher_args.items():
-            flag = f"--{key.replace('_', '-')}"
-            if isinstance(value, bool):
-                if value:
-                    cli.append(flag)
+        cache_root: Path | None = None
+        old_cache_env: dict[str, str | None] = {}
+        try:
+            if self.searcher_type == "faiss":
+                # Qwen3-Embedding-8B and the BrowseCompPlus corpus together need
+                # more than 20 GiB on first use.  Both are fully materialized in
+                # memory by the upstream searcher, so retaining their Hub caches
+                # for the lifetime of this one-task sandbox only wastes overlay
+                # space.  Keep the two downloads separate and reclaim each as
+                # soon as the corresponding object has loaded.
+                cache_root = Path(
+                    tempfile.mkdtemp(prefix="browsecompplus-hf-", dir="/tmp")
+                )
+                cache_env = {
+                    "HF_HOME": str(cache_root / "model"),
+                    "HF_DATASETS_CACHE": str(cache_root / "dataset"),
+                }
+                for key, value in cache_env.items():
+                    old_cache_env[key] = os.environ.get(key)
+                    os.environ[key] = value
+
+            from searcher.searchers import SearcherType
+
+            searcher_class = SearcherType.get_searcher_class(self.searcher_type)
+            if cache_root is not None:
+                upstream_searcher_class = searcher_class
+                model_cache = cache_root / "model"
+                dataset_cache = cache_root / "dataset"
+
+                class DiskBoundedFaissSearcher(upstream_searcher_class):
+                    def _load_dataset(inner_self) -> None:
+                        shutil.rmtree(model_cache, ignore_errors=True)
+                        super()._load_dataset()
+                        shutil.rmtree(dataset_cache, ignore_errors=True)
+
+                searcher_class = DiskBoundedFaissSearcher
+
+            parser = argparse.ArgumentParser(add_help=False)
+            searcher_class.parse_args(parser)
+            if self.searcher_type == "bm25":
+                searcher_args: dict[str, Any] = {
+                    "index_path": str(self.assets_dir / "indexes" / "bm25")
+                }
             else:
-                cli.extend([flag, str(value)])
-        self._searcher = searcher_class(parser.parse_args(cli))
+                model_dir = self.searcher_model_name.lower().split("/")[-1]
+                index_dir = self.assets_dir / "indexes" / model_dir
+                if not index_dir.is_dir():
+                    raise FileNotFoundError(
+                        f"BrowseCompPlus index is missing: {index_dir}"
+                    )
+                searcher_args = {
+                    "index_path": str(index_dir / "corpus.shard*_of_4.pkl"),
+                    "model_name": self.searcher_model_name,
+                    "normalize": self.normalize_search,
+                }
+            cli: list[str] = []
+            for key, value in searcher_args.items():
+                flag = f"--{key.replace('_', '-')}"
+                if isinstance(value, bool):
+                    if value:
+                        cli.append(flag)
+                else:
+                    cli.extend([flag, str(value)])
+            self._searcher = searcher_class(parser.parse_args(cli))
+        finally:
+            for key, value in old_cache_env.items():
+                if value is None:
+                    os.environ.pop(key, None)
+                else:
+                    os.environ[key] = value
+            if cache_root is not None:
+                shutil.rmtree(cache_root, ignore_errors=True)
 
     def _ensure_tokenizer(self) -> None:
         if self._tokenizer is None:
             from transformers import AutoTokenizer
 
-            self._tokenizer = AutoTokenizer.from_pretrained("Qwen/Qwen3-0.6B")
+            cache_dir = Path(
+                tempfile.mkdtemp(prefix="browsecompplus-tokenizer-", dir="/tmp")
+            )
+            try:
+                self._tokenizer = AutoTokenizer.from_pretrained(
+                    "Qwen/Qwen3-0.6B", cache_dir=cache_dir
+                )
+            finally:
+                shutil.rmtree(cache_dir, ignore_errors=True)
 
     def list_tasks(self) -> list[str]:
         self._ensure_tasks()

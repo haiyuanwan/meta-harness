@@ -24,7 +24,7 @@ from typing import Any
 
 RUNTIME_CONTRACT = "native-meta-harness-opensandbox-v4-late-verifier"
 SOLVER_RECIPE_REVISION = "solver-v2-litellm"
-BROWSECOMPPLUS_SOLVER_RECIPE_REVISION = "browsecompplus-solver-v3-faiss-imports"
+BROWSECOMPPLUS_SOLVER_RECIPE_REVISION = "browsecompplus-solver-v4-bounded-hf-cache"
 MANIFEST_SCHEMA_VERSION = 2
 DEFAULT_IMAGE = "python:3.12-bookworm"
 DEFAULT_DOMAIN = "10.119.212.249:8080"

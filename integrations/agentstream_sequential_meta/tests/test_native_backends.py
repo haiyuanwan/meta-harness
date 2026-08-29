@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import json
+import os
 import sys
 from pathlib import Path
 from types import ModuleType
 
 from integrations.agentstream_sequential_meta.benchmark_backends import bfcl
 from integrations.agentstream_sequential_meta.benchmark_backends.browsecompplus import (
+    BrowseCompPlusBackend,
     BrowseCompPlusEnvironment,
 )
 from integrations.agentstream_sequential_meta.benchmark_backends.prepare_browsecompplus import (
@@ -141,6 +143,64 @@ class FakeSearcher:
 
     def get_document(self, docid):
         return {"docid": docid, "text": "complete document"}
+
+
+def test_browse_faiss_reclaims_one_task_hub_caches(
+    monkeypatch, tmp_path: Path
+) -> None:
+    observed: dict[str, Path] = {}
+
+    class FakeFaissSearcher:
+        @classmethod
+        def parse_args(cls, parser) -> None:
+            parser.add_argument("--index-path")
+            parser.add_argument("--model-name")
+            parser.add_argument("--normalize", action="store_true")
+
+        def __init__(self, args) -> None:
+            self.args = args
+            self._load_model()
+            self._load_dataset()
+
+        def _load_model(self) -> None:
+            model_cache = Path(os.environ["HF_HOME"])
+            model_cache.mkdir(parents=True)
+            (model_cache / "weights").write_text("loaded", encoding="utf-8")
+            observed["model"] = model_cache
+
+        def _load_dataset(self) -> None:
+            assert not observed["model"].exists()
+            dataset_cache = Path(os.environ["HF_DATASETS_CACHE"])
+            dataset_cache.mkdir(parents=True)
+            (dataset_cache / "corpus").write_text("loaded", encoding="utf-8")
+            observed["dataset"] = dataset_cache
+
+    class FakeSearcherType:
+        @staticmethod
+        def get_searcher_class(searcher_type):
+            assert searcher_type == "faiss"
+            return FakeFaissSearcher
+
+    searcher_package = ModuleType("searcher")
+    searchers_module = ModuleType("searcher.searchers")
+    searchers_module.SearcherType = FakeSearcherType
+    monkeypatch.setitem(sys.modules, "safetensors", ModuleType("safetensors"))
+    monkeypatch.setitem(sys.modules, "torch", ModuleType("torch"))
+    monkeypatch.setitem(sys.modules, "searcher", searcher_package)
+    monkeypatch.setitem(sys.modules, "searcher.searchers", searchers_module)
+    monkeypatch.delenv("HF_HOME", raising=False)
+    monkeypatch.delenv("HF_DATASETS_CACHE", raising=False)
+
+    assets = tmp_path / "assets"
+    (assets / "indexes" / "qwen3-embedding-8b").mkdir(parents=True)
+    backend = BrowseCompPlusBackend(assets_dir=str(assets))
+    backend._ensure_searcher()
+
+    assert isinstance(backend._searcher, FakeFaissSearcher)
+    assert not observed["model"].exists()
+    assert not observed["dataset"].exists()
+    assert "HF_HOME" not in os.environ
+    assert "HF_DATASETS_CACHE" not in os.environ
 
 
 def _install_fake_browse_grader(monkeypatch) -> None:
