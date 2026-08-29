@@ -24,6 +24,7 @@ from typing import Any
 
 RUNTIME_CONTRACT = "native-meta-harness-opensandbox-v4-late-verifier"
 SOLVER_RECIPE_REVISION = "solver-v2-litellm"
+BROWSECOMPPLUS_SOLVER_RECIPE_REVISION = "browsecompplus-solver-v3-faiss-imports"
 MANIFEST_SCHEMA_VERSION = 2
 DEFAULT_IMAGE = "python:3.12-bookworm"
 DEFAULT_DOMAIN = "10.119.212.249:8080"
@@ -315,14 +316,21 @@ class OpenSandboxBackend:
             "source_digest": self.source_hash,
             "role_source_digests": dict(self._source_digests),
             "runtime_contract": RUNTIME_CONTRACT,
-            "solver_recipe_revision": SOLVER_RECIPE_REVISION,
+            "solver_recipe_revisions": {
+                "default": SOLVER_RECIPE_REVISION,
+                "browsecompplus": BROWSECOMPPLUS_SOLVER_RECIPE_REVISION,
+            },
         }
 
     @staticmethod
-    def _recipe_revision(role: str) -> str | None:
+    def _recipe_revision(benchmark: str, role: str) -> str | None:
         # Solver model-runtime dependencies are versioned independently so a
         # solver-only recipe fix does not invalidate private grader snapshots.
-        return SOLVER_RECIPE_REVISION if role == "solver" else None
+        if role != "solver":
+            return None
+        if benchmark == "browsecompplus":
+            return BROWSECOMPPLUS_SOLVER_RECIPE_REVISION
+        return SOLVER_RECIPE_REVISION
 
     @staticmethod
     def _runtime_env(provider_env: dict[str, str]) -> dict[str, str]:
@@ -428,7 +436,7 @@ class OpenSandboxBackend:
             role=role,
             source_hash=self._source_digests[role],
             settings=self.settings,
-            recipe_revision=self._recipe_revision(role),
+            recipe_revision=self._recipe_revision(benchmark, role),
         )
         value = self._read_manifest()["entries"].get(identity)
         return RuntimeSnapshot.from_dict(value) if value else None
@@ -586,8 +594,9 @@ class OpenSandboxBackend:
             ),
             (
                 "python -m pip install --no-cache-dir "
-                "'transformers>=4.53.2,<5' safetensors faiss-cpu "
-                "hf_transfer huggingface_hub"
+                "'transformers>=4.53.2,<5' 'pillow>=12.1.1' "
+                "'peft>=0.16.0' safetensors faiss-cpu hf_transfer "
+                "huggingface_hub"
             ),
             (
                 "python -m pip install --no-cache-dir --no-deps "
@@ -603,7 +612,8 @@ class OpenSandboxBackend:
             (
                 "python -c \"from transformers import AutoTokenizer; "
                 "AutoTokenizer.from_pretrained('Qwen/Qwen3-0.6B'); "
-                "import searcher, scripts_evaluation; "
+                "from searcher.searchers.faiss_searcher import FaissSearcher; "
+                "import scripts_evaluation; "
                 "print('browsecompplus-native-ready')\""
             ),
             f"rm -f {full_data} {grader_data}",
@@ -680,7 +690,7 @@ class OpenSandboxBackend:
                     role=role,
                     source_hash=self._source_digests[role],
                     settings=self.settings,
-                    recipe_revision=self._recipe_revision(role),
+                    recipe_revision=self._recipe_revision(benchmark, role),
                 )
                 pending = await sandbox.create_snapshot(
                     name=f"native-harness-{benchmark}-{role}-{identity[:16]}"

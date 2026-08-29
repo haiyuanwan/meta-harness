@@ -180,6 +180,9 @@ def test_runtime_bootstrap_does_not_install_exgentic() -> None:
     assert "dd063104c81a76d6a77c845f667b46b9e5abd625" in browse
     assert "--no-deps 'git+https://github.com/lilacheden/BrowseComp-Plus/" in browse
     assert "pyserini" not in browse
+    assert "'pillow>=12.1.1'" in browse
+    assert "'peft>=0.16.0'" in browse
+    assert "from searcher.searchers.faiss_searcher import FaissSearcher" in browse
     assert "python /opt/meta-harness/integrations/agentstream_sequential_meta/benchmark_backends/prepare_browsecompplus.py" in browse
     assert "@mac-support-and-packaging" not in browse
     assert "rm -f /opt/benchmark-assets/browsecompplus/data/browsecomp_plus_decrypted.jsonl" in browse
