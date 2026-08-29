@@ -495,10 +495,6 @@ class OpenSandboxBackend:
         commands = [
             "set -euo pipefail",
             "export DEBIAN_FRONTEND=noninteractive",
-            (
-                "sed -i 's|http://deb.debian.org|https://deb.debian.org|g' "
-                "/etc/apt/sources.list.d/debian.sources"
-            ),
             "apt-get update",
             (
                 "apt-get install -y --no-install-recommends "
