@@ -203,6 +203,65 @@ def test_browse_faiss_reclaims_one_task_hub_caches(
     assert "HF_DATASETS_CACHE" not in os.environ
 
 
+def test_browse_faiss_uses_mounted_model_and_corpus(
+    monkeypatch, tmp_path: Path
+) -> None:
+    class FakeFaissSearcher:
+        @classmethod
+        def parse_args(cls, parser) -> None:
+            parser.add_argument("--index-path")
+            parser.add_argument("--model-name")
+            parser.add_argument("--normalize", action="store_true")
+
+        def __init__(self, args) -> None:
+            self.args = args
+            self.docid_to_text = None
+            self._load_dataset()
+
+        def _load_dataset(self) -> None:
+            raise AssertionError("mounted corpus should replace the Hub loader")
+
+    class FakeSearcherType:
+        @staticmethod
+        def get_searcher_class(searcher_type):
+            assert searcher_type == "faiss"
+            return FakeFaissSearcher
+
+    searcher_package = ModuleType("searcher")
+    searchers_module = ModuleType("searcher.searchers")
+    searchers_module.SearcherType = FakeSearcherType
+    datasets_module = ModuleType("datasets")
+    datasets_module.load_from_disk = lambda path: [
+        {"docid": "doc-1", "text": f"loaded:{path}"}
+    ]
+    monkeypatch.setitem(sys.modules, "safetensors", ModuleType("safetensors"))
+    monkeypatch.setitem(sys.modules, "torch", ModuleType("torch"))
+    monkeypatch.setitem(sys.modules, "searcher", searcher_package)
+    monkeypatch.setitem(sys.modules, "searcher.searchers", searchers_module)
+    monkeypatch.setitem(sys.modules, "datasets", datasets_module)
+    monkeypatch.delenv("HF_HOME", raising=False)
+    monkeypatch.delenv("HF_DATASETS_CACHE", raising=False)
+
+    assets = tmp_path / "assets"
+    (assets / "indexes" / "qwen3-embedding-8b").mkdir(parents=True)
+    model = assets / "models" / "Qwen3-Embedding-8B"
+    model.mkdir(parents=True)
+    (model / "config.json").write_text("{}", encoding="utf-8")
+    corpus = assets / "corpus"
+    corpus.mkdir()
+    (corpus / "state.json").write_text("{}", encoding="utf-8")
+
+    backend = BrowseCompPlusBackend(assets_dir=str(assets))
+    backend._ensure_searcher()
+
+    assert backend._searcher.args.model_name == str(model)
+    assert backend._searcher.docid_to_text == {
+        "doc-1": f"loaded:{corpus}"
+    }
+    assert "HF_HOME" not in os.environ
+    assert "HF_DATASETS_CACHE" not in os.environ
+
+
 def _install_fake_browse_grader(monkeypatch) -> None:
     litellm = ModuleType("litellm")
     litellm.completion = lambda **kwargs: {

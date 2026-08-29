@@ -27,6 +27,9 @@ from .experiment_protocol import FormalPartition, build_formal_partitions
 from .hda_reporting import prepare_hda_review
 
 from .opensandbox_backend import (
+    DEFAULT_ASSETS_PATH as DEFAULT_OPENSANDBOX_ASSETS_PATH,
+)
+from .opensandbox_backend import (
     DEFAULT_CACHE_PATH as DEFAULT_OPENSANDBOX_CACHE_PATH,
 )
 from .opensandbox_backend import (
@@ -521,6 +524,15 @@ def run(args: argparse.Namespace) -> None:
         ).expanduser()
         if not cache_path.is_absolute():
             cache_path = REPO_ROOT / cache_path
+        assets_root = Path(
+            getattr(
+                args,
+                "opensandbox_assets_root",
+                str(DEFAULT_OPENSANDBOX_ASSETS_PATH),
+            )
+        ).expanduser()
+        if not assets_root.is_absolute():
+            assets_root = REPO_ROOT / assets_root
         settings = OpenSandboxSettings(
             domain=getattr(args, "opensandbox_domain", None)
             or os.environ.get("OPENSANDBOX_DOMAIN")
@@ -545,6 +557,7 @@ def run(args: argparse.Namespace) -> None:
             image=getattr(args, "opensandbox_image", DEFAULT_OPENSANDBOX_IMAGE),
             runtime_mode=getattr(args, "opensandbox_runtime_mode", "auto"),
             runtime_cache_path=cache_path.resolve(),
+            runtime_assets_root=assets_root.resolve(),
             cpus=getattr(args, "opensandbox_cpus", 4),
             memory=getattr(args, "opensandbox_memory", "16Gi"),
         )
@@ -1167,6 +1180,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--opensandbox-runtime-cache",
         default=str(DEFAULT_OPENSANDBOX_CACHE_PATH),
+    )
+    parser.add_argument(
+        "--opensandbox-assets-root",
+        default=str(DEFAULT_OPENSANDBOX_ASSETS_PATH),
     )
     parser.add_argument("--opensandbox-cpus", type=int, default=4)
     parser.add_argument("--opensandbox-memory", default="16Gi")

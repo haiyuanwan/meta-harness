@@ -11,10 +11,10 @@
 
 ## 0. 当前状态
 
-- 更新时间：2026-08-26。
+- 更新时间：2026-08-29。
 - 状态：方案已 review；benchmark-native runtime、固定划分、六格评测、显著性门、
   HDA 审批报告，以及 Terminal-Bench/Harbor 风格的 late-verifier 隔离均已完成。
-- 尚未完成：controller 进程级精确 resume、BrowseCompPlus 真实 task smoke，
+- 尚未完成：controller 进程级精确 resume、BrowseCompPlus 挂载资产版真实 task smoke，
   以及获得人工批准后的 Bcc/Eneutral 执行。
 - 尚未启动 BFCL/BrowseCompPlus 正式计分与五轮付费实验；仅执行了下述 BFCL
   三任务基础设施 smoke。
@@ -72,7 +72,7 @@ grader snapshot
    model actions，也不回滚已经提交的 `harness_store.json`；合法 score=0 不重试。
 8. 本地模式保留相同的时间顺序用于低成本 smoke，但只有 OpenSandbox 双 snapshot
    提供进程和文件系统层面的正式隔离。
-9. 当前专项测试为 `54 passed`；其中包括 grader 连续失败三次而 solver 只执行
+9. 当前专项测试为 `58 passed`；其中包括 grader 连续失败三次而 solver 只执行
    一次、state 不回滚、solver source archive 无 grader 包、公开 Browse 清单无
    私有字段等回归测试。
 10. 已增加可选 Harbor 0.20 executor 原型：外层 continual controller 保持不变，
@@ -85,6 +85,10 @@ grader snapshot
 12. BrowseCompPlus 官方包使用 `--no-deps` 安装，再精确安装 FAISS 路径依赖，避免
     未使用的 `pyserini>=1.2.0` 导致大规模 pip 版本回溯；Tevatron 固定到 commit
     `dd063104c81a76d6a77c845f667b46b9e5abd625`。
+13. BrowseCompPlus 的 FAISS index、Qwen3 权重和 corpus 不再写入 OpenSandbox
+    overlay/snapshot。prepare 阶段将它们写入 controller 的专用共享挂载目录；正式
+    solver 只读挂载 public assets，verifier 只读挂载独立的 private grader assets。
+    两者都不能看到对方目录，也不会挂载整个用户目录或 `.secrets`。
 
 ### 0.2 代码落点
 
@@ -114,7 +118,7 @@ PYTEST_DISABLE_PLUGIN_AUTOLOAD=1 \
 pytest -q integrations/agentstream_sequential_meta/tests
 ```
 
-当前结果是 `54 passed`。2026-08-26 已在真实 OpenSandbox 上构建 BFCL/Browse 各
+当前结果是 `58 passed`。2026-08-26 已在真实 OpenSandbox 上构建 BFCL/Browse 各
 solver+grader snapshot，并以 Harbor 跑完 BFCL 三任务 smoke。该 smoke 不是正式实验：
 train/validation/test 分别为 `1.0/0.0/0.0`，对应模型调用 `13/10/11` 次；两次 verifier
 分别收到 `2/1` 条 grader 结果。状态从 `session_count=0` 经 train+validation 变为 `2`，
@@ -613,11 +617,18 @@ solver，也不因合法 score=0 重试。
 - solver 成功后取回轨迹、最小 grading artifact 和 chunk 的 `state_after`，先提交状态；
 - solver sandbox 销毁后，才从 grader snapshot 创建独立 sandbox 并注入 artifact；
 - BFCL solver snapshot 删除 `possible_answer`；BrowseCompPlus solver 清单只有
-  `query_id/query`，答案与 evidence 只存在于 grader snapshot；
+  `query_id/query`，答案与 evidence 只存在于 grader 专用挂载；
+- OpenSandbox snapshot 只保存代码、Python 包和系统依赖；BrowseCompPlus 的 index、
+  embedding 权重和 corpus 位于
+  `.meta-harness/opensandbox-assets-v1/browsecompplus/solver/`，以只读 host volume
+  挂入 solver；grader 数据使用并只挂载 sibling `grader/` 目录；
+- runtime identity 同时绑定资产目录和固定 asset revision，避免切换挂载后静默复用
+  不兼容 snapshot；
 - proposer 运行在独立 workspace，不能挂载 hidden manifest、hidden 数据、grader、私有分数和模型密钥；
 - hidden 评测在 checkpoint 副本上运行，其输出状态绝不写回主线。
 
-镜像/snapshot 只固定依赖和运行环境，不保存实验密钥，也不替代 harness checkpoint。
+镜像/snapshot 只固定依赖和运行环境，不保存大模型/语料、实验密钥，也不替代
+harness checkpoint。绝不能把整个 `/mnt/public/users/wanhaiyuan/` 挂进 solver。
 
 ## 11. 产物与报告
 

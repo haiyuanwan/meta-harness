@@ -74,10 +74,14 @@ class BrowseCompPlusBackend(BenchmarkBackend):
         import safetensors  # noqa: F401
         import torch  # noqa: F401
 
+        mounted_model = self.assets_dir / "models" / "Qwen3-Embedding-8B"
+        mounted_corpus = self.assets_dir / "corpus"
+        has_mounted_model = (mounted_model / "config.json").is_file()
+        has_mounted_corpus = (mounted_corpus / "state.json").is_file()
         cache_root: Path | None = None
         old_cache_env: dict[str, str | None] = {}
         try:
-            if self.searcher_type == "faiss":
+            if self.searcher_type == "faiss" and not has_mounted_model:
                 # Qwen3-Embedding-8B and the BrowseCompPlus corpus together need
                 # more than 20 GiB on first use.  Both are fully materialized in
                 # memory by the upstream searcher, so retaining their Hub caches
@@ -98,7 +102,20 @@ class BrowseCompPlusBackend(BenchmarkBackend):
             from searcher.searchers import SearcherType
 
             searcher_class = SearcherType.get_searcher_class(self.searcher_type)
-            if cache_root is not None:
+            if self.searcher_type == "faiss" and has_mounted_corpus:
+                upstream_searcher_class = searcher_class
+
+                class MountedCorpusFaissSearcher(upstream_searcher_class):
+                    def _load_dataset(inner_self) -> None:
+                        from datasets import load_from_disk
+
+                        dataset = load_from_disk(str(mounted_corpus))
+                        inner_self.docid_to_text = {
+                            row["docid"]: row["text"] for row in dataset
+                        }
+
+                searcher_class = MountedCorpusFaissSearcher
+            elif cache_root is not None:
                 upstream_searcher_class = searcher_class
                 model_cache = cache_root / "model"
                 dataset_cache = cache_root / "dataset"
@@ -126,7 +143,11 @@ class BrowseCompPlusBackend(BenchmarkBackend):
                     )
                 searcher_args = {
                     "index_path": str(index_dir / "corpus.shard*_of_4.pkl"),
-                    "model_name": self.searcher_model_name,
+                    "model_name": (
+                        str(mounted_model)
+                        if has_mounted_model
+                        else self.searcher_model_name
+                    ),
                     "normalize": self.normalize_search,
                 }
             cli: list[str] = []
@@ -151,6 +172,14 @@ class BrowseCompPlusBackend(BenchmarkBackend):
         if self._tokenizer is None:
             from transformers import AutoTokenizer
 
+            mounted_tokenizer = (
+                self.assets_dir / "models" / "Qwen3-0.6B-tokenizer"
+            )
+            if (mounted_tokenizer / "tokenizer_config.json").is_file():
+                self._tokenizer = AutoTokenizer.from_pretrained(
+                    mounted_tokenizer, local_files_only=True
+                )
+                return
             cache_dir = Path(
                 tempfile.mkdtemp(prefix="browsecompplus-tokenizer-", dir="/tmp")
             )

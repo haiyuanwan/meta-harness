@@ -114,6 +114,18 @@ if Trial is not None:
     class SnapshotOpenSandboxEnvironment(OpenSandboxEnvironment):
         """Harbor OpenSandbox environment restored from a prepared snapshot."""
 
+        def __init__(
+            self,
+            *args: Any,
+            snapshot_volumes: dict[str, list[dict[str, Any]]] | None = None,
+            **kwargs: Any,
+        ) -> None:
+            self._snapshot_volumes = {
+                str(snapshot_id): list(volumes)
+                for snapshot_id, volumes in (snapshot_volumes or {}).items()
+            }
+            super().__init__(*args, **kwargs)
+
         @override
         def _validate_definition(self) -> None:
             parse_snapshot_reference(self.task_env_config.docker_image)
@@ -128,6 +140,10 @@ if Trial is not None:
             snapshot_id = parse_snapshot_reference(
                 self.task_env_config.docker_image
             )
+            volume_definitions = [
+                *self._volumes,
+                *self._snapshot_volumes.get(snapshot_id, []),
+            ]
             sandbox = await sdk["Sandbox"].create(
                 snapshot_id=snapshot_id,
                 timeout=timedelta(seconds=self._sandbox_timeout_sec),
@@ -138,7 +154,11 @@ if Trial is not None:
                 network_policy=self._build_network_policy(sdk),
                 extensions=self._build_extensions(),
                 entrypoint=self._entrypoint,
-                volumes=self._build_volumes(sdk),
+                volumes=(
+                    [sdk["Volume"](**volume) for volume in volume_definitions]
+                    if volume_definitions
+                    else None
+                ),
                 connection_config=self._build_connection_config(sdk),
                 skip_health_check=True,
             )
@@ -346,6 +366,8 @@ class HarborTrialExecutor:
         agent_timeout_sec: int,
         verifier_timeout_sec: int,
         on_solver_complete: Callable[[Path], None] | None = None,
+        solver_volumes: list[dict[str, Any]] | None = None,
+        grader_volumes: list[dict[str, Any]] | None = None,
     ) -> HarborChunkResult:
         if Trial is None:
             raise HarborExecutorError(
@@ -371,6 +393,13 @@ class HarborTrialExecutor:
             VerifierConfig,
         )
 
+        environment_kwargs = {
+            **self.environment_kwargs,
+            "snapshot_volumes": {
+                solver_snapshot_id: list(solver_volumes or []),
+                grader_snapshot_id: list(grader_volumes or []),
+            },
+        }
         config = TrialConfig(
             task=TaskConfig(path=task_root),
             trial_name=trial_name,
@@ -400,7 +429,7 @@ class HarborTrialExecutor:
                     "integrations.agentstream_sequential_meta.harbor_executor:"
                     "SnapshotOpenSandboxEnvironment"
                 ),
-                kwargs=self.environment_kwargs,
+                kwargs=environment_kwargs,
                 override_cpus=self.cpus,
                 override_memory_mb=self.memory_mb,
             ),

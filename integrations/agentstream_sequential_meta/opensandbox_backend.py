@@ -22,13 +22,15 @@ from importlib.metadata import PackageNotFoundError, version
 from pathlib import Path, PurePosixPath
 from typing import Any
 
-RUNTIME_CONTRACT = "native-meta-harness-opensandbox-v4-late-verifier"
+RUNTIME_CONTRACT = "native-meta-harness-opensandbox-v5-mounted-assets"
 SOLVER_RECIPE_REVISION = "solver-v2-litellm"
-BROWSECOMPPLUS_SOLVER_RECIPE_REVISION = "browsecompplus-solver-v4-bounded-hf-cache"
+BROWSECOMPPLUS_SOLVER_RECIPE_REVISION = "browsecompplus-solver-v5-mounted-assets"
+BROWSECOMPPLUS_ASSET_REVISION = "browsecompplus-qwen3-8b-assets-v1"
 MANIFEST_SCHEMA_VERSION = 2
 DEFAULT_IMAGE = "python:3.12-bookworm"
 DEFAULT_DOMAIN = "10.119.212.249:8080"
 DEFAULT_CACHE_PATH = Path(".meta-harness/opensandbox-runtime-cache-v2.json")
+DEFAULT_ASSETS_PATH = Path(".meta-harness/opensandbox-assets-v1")
 _RUNTIME_MODES = frozenset({"auto", "require", "rebuild"})
 _EXCLUDED_PARTS = frozenset(
     {
@@ -65,6 +67,7 @@ class OpenSandboxSettings:
     image: str = DEFAULT_IMAGE
     runtime_mode: str = "auto"
     runtime_cache_path: Path = DEFAULT_CACHE_PATH
+    runtime_assets_root: Path | None = None
     cpus: int = 4
     memory: str = "16Gi"
 
@@ -91,11 +94,21 @@ class OpenSandboxSettings:
             raise ValueError("OpenSandbox timeouts and cpus must be positive")
         if not self.image.strip() or not self.memory.strip():
             raise ValueError("OpenSandbox image and memory must not be empty")
+        if (
+            self.runtime_assets_root is not None
+            and not self.runtime_assets_root.is_absolute()
+        ):
+            raise ValueError("runtime_assets_root must be an absolute path")
 
     def public_dict(self) -> dict[str, Any]:
         value = asdict(self)
         value["api_key"] = "<configured>" if self.api_key else ""
         value["runtime_cache_path"] = str(self.runtime_cache_path)
+        value["runtime_assets_root"] = (
+            str(self.runtime_assets_root)
+            if self.runtime_assets_root is not None
+            else None
+        )
         return value
 
 
@@ -231,6 +244,13 @@ def runtime_identity(
     }
     if recipe_revision is not None:
         payload["recipe_revision"] = recipe_revision
+    if benchmark == "browsecompplus":
+        payload["asset_revision"] = BROWSECOMPPLUS_ASSET_REVISION
+        payload["runtime_assets_root"] = (
+            str(settings.runtime_assets_root)
+            if settings.runtime_assets_root is not None
+            else None
+        )
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
     return hashlib.sha256(encoded).hexdigest()
 
@@ -430,6 +450,34 @@ class OpenSandboxBackend:
         )
         os.replace(temporary, path)
 
+    def runtime_volumes(
+        self,
+        benchmark: str,
+        role: str,
+        *,
+        read_only: bool,
+    ) -> list[dict[str, Any]]:
+        """Return role-separated host mounts for benchmark runtime assets."""
+
+        root = getattr(self.settings, "runtime_assets_root", None)
+        if benchmark != "browsecompplus" or root is None:
+            return []
+        if role not in {"solver", "grader"}:
+            raise ValueError("runtime role must be solver or grader")
+        host_path = (root / benchmark / role).resolve()
+        if root.resolve() not in host_path.parents:
+            raise OpenSandboxBackendError("runtime asset path escaped its root")
+        host_path.mkdir(parents=True, exist_ok=True)
+        host_path.chmod(0o700)
+        return [
+            {
+                "name": f"native-harness-{benchmark}-{role}-assets",
+                "host": {"path": str(host_path)},
+                "mountPath": "/opt/benchmark-assets/browsecompplus",
+                "readOnly": read_only,
+            }
+        ]
+
     def _lookup_snapshot(self, benchmark: str, role: str) -> RuntimeSnapshot | None:
         identity = runtime_identity(
             benchmark=benchmark,
@@ -554,8 +602,13 @@ class OpenSandboxBackend:
         full_data = f"{assets}/data/browsecomp_plus_decrypted.jsonl"
         solver_data = f"{assets}/data/browsecomp_plus_solver.jsonl"
         grader_data = f"{assets}/data/browsecomp_plus_grader.jsonl"
+        index_dir = f"{assets}/indexes/qwen3-embedding-8b"
+        model_dir = f"{assets}/models/Qwen3-Embedding-8B"
+        tokenizer_dir = f"{assets}/models/Qwen3-0.6B-tokenizer"
+        corpus_dir = f"{assets}/corpus"
         revision = "7cd697e133ba9150c3c310d10043e327d9f06c41"
         tevatron_revision = "dd063104c81a76d6a77c845f667b46b9e5abd625"
+        role_data = grader_data if role == "grader" else solver_data
         common = [
             (
                 "python -m pip install --no-cache-dir --no-deps "
@@ -563,18 +616,20 @@ class OpenSandboxBackend:
                 f"@{revision}'"
             ),
             "python -m pip install --no-cache-dir 'datasets>=4.0.0'",
-            f"mkdir -p {assets}/data {assets}/topics-qrels {assets}/indexes",
             (
-                f"cd {assets} && python -m scripts_build_index.decrypt_dataset "
-                f"--output {full_data} "
-                f"--generate-tsv {assets}/topics-qrels/queries.tsv"
+                f"mkdir -p {assets}/data {assets}/topics-qrels "
+                f"{assets}/indexes {assets}/models"
             ),
             (
+                f"if [ ! -f {role_data} ]; then "
+                f"cd {assets} && python -m scripts_build_index.decrypt_dataset "
+                f"--output {full_data} "
+                f"--generate-tsv {assets}/topics-qrels/queries.tsv && "
                 "python /opt/meta-harness/integrations/"
                 "agentstream_sequential_meta/benchmark_backends/"
                 "prepare_browsecompplus.py "
                 f"--input {full_data} --solver-output {solver_data} "
-                f"--grader-output {grader_data}"
+                f"--grader-output {grader_data}; fi"
             ),
         ]
         if role == "grader":
@@ -604,14 +659,37 @@ class OpenSandboxBackend:
                 f"@{tevatron_revision}'"
             ),
             (
+                f"if ! compgen -G '{index_dir}/corpus.shard*_of_4.pkl' "
+                "> /dev/null; then "
                 f"cd {assets}/indexes && HF_HUB_ENABLE_HF_TRANSFER=1 "
                 "hf download Tevatron/browsecomp-plus-indexes "
                 "--repo-type=dataset --include='qwen3-embedding-8b/*' "
-                "--local-dir ."
+                "--local-dir .; fi"
             ),
             (
+                f"if [ ! -f {model_dir}/config.json ]; then "
+                "HF_HUB_ENABLE_HF_TRANSFER=1 hf download "
+                f"Qwen/Qwen3-Embedding-8B --local-dir {model_dir}; fi"
+            ),
+            (
+                f"if [ ! -f {corpus_dir}/state.json ]; then "
+                "python -c \"from datasets import load_dataset; "
+                "load_dataset('Tevatron/browsecomp-plus-corpus', "
+                f"split='train', cache_dir='{assets}/.cache/datasets')"
+                f".save_to_disk('{corpus_dir}')\"; fi"
+            ),
+            (
+                f"if [ ! -f {tokenizer_dir}/tokenizer_config.json ]; then "
                 "python -c \"from transformers import AutoTokenizer; "
-                "AutoTokenizer.from_pretrained('Qwen/Qwen3-0.6B'); "
+                "AutoTokenizer.from_pretrained('Qwen/Qwen3-0.6B', "
+                "cache_dir='/tmp/qwen-tokenizer-cache').save_pretrained("
+                f"'{tokenizer_dir}')\"; "
+                "rm -rf /tmp/qwen-tokenizer-cache; fi"
+            ),
+            (
+                f"python -c \"from transformers import AutoTokenizer; "
+                f"AutoTokenizer.from_pretrained('{tokenizer_dir}', "
+                "local_files_only=True); "
                 "from searcher.searchers.faiss_searcher import FaissSearcher; "
                 "import scripts_evaluation; "
                 "print('browsecompplus-native-ready')\""
@@ -621,14 +699,24 @@ class OpenSandboxBackend:
         ]
 
     def _create_sandbox(
-        self, *, snapshot_id: str | None, env: dict[str, str], role: str
+        self,
+        *,
+        benchmark: str,
+        snapshot_id: str | None,
+        env: dict[str, str],
+        role: str,
+        assets_read_only: bool,
     ):
         try:
             from opensandbox import Sandbox
+            from opensandbox.models.sandboxes import Volume
         except ImportError as exc:
             raise OpenSandboxBackendError(
                 "OpenSandbox backend requires harbor[opensandbox]==0.20.0"
             ) from exc
+        volume_definitions = self.runtime_volumes(
+            benchmark, role, read_only=assets_read_only
+        )
         kwargs = {
             "timeout": timedelta(seconds=self.settings.sandbox_timeout_sec),
             "ready_timeout": timedelta(seconds=self.settings.ready_timeout_sec),
@@ -642,6 +730,11 @@ class OpenSandboxBackend:
                 "cpu": str(self.settings.cpus),
                 "memory": self.settings.memory,
             },
+            "volumes": (
+                [Volume(**volume) for volume in volume_definitions]
+                if volume_definitions
+                else None
+            ),
             "connection_config": self._connection_config(),
         }
         if snapshot_id is None:
@@ -656,8 +749,10 @@ class OpenSandboxBackend:
             from opensandbox.models.execd import RunCommandOpts
 
             sandbox = await self._create_sandbox(
+                benchmark=benchmark,
                 snapshot_id=None,
                 role=role,
+                assets_read_only=False,
                 env={
                     "DEBIAN_FRONTEND": "noninteractive",
                     "PYTHONPATH": "/opt/meta-harness",
@@ -755,9 +850,11 @@ class OpenSandboxBackend:
 
             worker_env = self._worker_env(operation)
             sandbox = await self._create_sandbox(
+                benchmark=benchmark,
                 snapshot_id=snapshot.snapshot_id,
                 env=worker_env,
                 role=role,
+                assets_read_only=True,
             )
             local_dir = Path(tempfile.mkdtemp(prefix="native-opensandbox-result-"))
             try:

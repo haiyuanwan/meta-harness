@@ -115,6 +115,40 @@ def test_runtime_identity_changes_with_recipe_revision(tmp_path: Path) -> None:
     assert legacy != revised
 
 
+def test_browse_runtime_identity_binds_asset_mount(tmp_path: Path) -> None:
+    first = OpenSandboxSettings(
+        runtime_cache_path=tmp_path / "cache.json",
+        runtime_assets_root=(tmp_path / "assets-a").resolve(),
+    )
+    second = OpenSandboxSettings(
+        runtime_cache_path=tmp_path / "cache.json",
+        runtime_assets_root=(tmp_path / "assets-b").resolve(),
+    )
+
+    assert runtime_identity(
+        benchmark="browsecompplus", source_hash="a" * 64, settings=first
+    ) != runtime_identity(
+        benchmark="browsecompplus", source_hash="a" * 64, settings=second
+    )
+
+
+def test_browse_runtime_assets_are_role_separated(tmp_path: Path) -> None:
+    backend = object.__new__(OpenSandboxBackend)
+    backend.settings = OpenSandboxSettings(
+        runtime_cache_path=tmp_path / "cache.json",
+        runtime_assets_root=(tmp_path / "assets").resolve(),
+    )
+
+    solver = backend.runtime_volumes("browsecompplus", "solver", read_only=True)
+    grader = backend.runtime_volumes("browsecompplus", "grader", read_only=True)
+
+    assert solver[0]["host"]["path"].endswith("/browsecompplus/solver")
+    assert grader[0]["host"]["path"].endswith("/browsecompplus/grader")
+    assert solver[0]["host"]["path"] != grader[0]["host"]["path"]
+    assert solver[0]["mountPath"] == "/opt/benchmark-assets/browsecompplus"
+    assert solver[0]["readOnly"] is True
+
+
 def test_solver_source_archive_excludes_private_grader_package() -> None:
     root = Path(__file__).parents[3]
     names = {
@@ -183,6 +217,10 @@ def test_runtime_bootstrap_does_not_install_exgentic() -> None:
     assert "'pillow>=12.1.1'" in browse
     assert "'peft>=0.16.0'" in browse
     assert "from searcher.searchers.faiss_searcher import FaissSearcher" in browse
+    assert "Qwen/Qwen3-Embedding-8B --local-dir" in browse
+    assert "Tevatron/browsecomp-plus-corpus" in browse
+    assert ".save_to_disk('/opt/benchmark-assets/browsecompplus/corpus')" in browse
+    assert "cache_dir='/opt/benchmark-assets/browsecompplus/.cache/datasets'" in browse
     assert "python /opt/meta-harness/integrations/agentstream_sequential_meta/benchmark_backends/prepare_browsecompplus.py" in browse
     assert "@mac-support-and-packaging" not in browse
     assert "rm -f /opt/benchmark-assets/browsecompplus/data/browsecomp_plus_decrypted.jsonl" in browse

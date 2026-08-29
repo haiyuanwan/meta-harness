@@ -152,6 +152,12 @@ class HarborOpenSandboxBackend(OpenSandboxBackend):
                         agent_timeout_sec=self.settings.command_timeout_sec,
                         verifier_timeout_sec=self.settings.command_timeout_sec,
                         on_solver_complete=commit_solver_output,
+                        solver_volumes=self.runtime_volumes(
+                            benchmark, "solver", read_only=True
+                        ),
+                        grader_volumes=self.runtime_volumes(
+                            benchmark, "grader", read_only=True
+                        ),
                     )
                     last_error = None
                     break
