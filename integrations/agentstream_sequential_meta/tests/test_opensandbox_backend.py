@@ -171,6 +171,7 @@ def test_runtime_bootstrap_does_not_install_exgentic() -> None:
 
     for benchmark in ("bfcl", "browsecompplus"):
         command = backend._bootstrap_command(benchmark)
+        assert "https://deb.debian.org" in command
         assert "import exgentic" not in command
         assert "/opt/agentstream" not in command
         assert "pip install --no-cache-dir -e '/opt/agentstream" not in command
