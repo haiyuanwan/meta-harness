@@ -24,8 +24,8 @@ from typing import Any
 
 RUNTIME_CONTRACT = "native-meta-harness-opensandbox-v5-mounted-assets"
 SOLVER_RECIPE_REVISION = "solver-v2-litellm"
-BROWSECOMPPLUS_SOLVER_RECIPE_REVISION = "browsecompplus-solver-v5-mounted-assets"
-BROWSECOMPPLUS_ASSET_REVISION = "browsecompplus-qwen3-8b-assets-v1"
+BROWSECOMPPLUS_SOLVER_RECIPE_REVISION = "browsecompplus-solver-v6-mounted-hf-cache"
+BROWSECOMPPLUS_ASSET_REVISION = "browsecompplus-qwen3-8b-assets-v2"
 MANIFEST_SCHEMA_VERSION = 2
 DEFAULT_IMAGE = "python:3.12-bookworm"
 DEFAULT_DOMAIN = "10.119.212.249:8080"
@@ -374,7 +374,10 @@ class OpenSandboxBackend:
                 "BROWSECOMPPLUS_ASSETS_DIR": (
                     "/opt/benchmark-assets/browsecompplus"
                 ),
+                "HF_DATASETS_OFFLINE": "1",
+                "HF_HUB_OFFLINE": "1",
                 "LITELLM_LOCAL_MODEL_COST_MAP": "True",
+                "TRANSFORMERS_OFFLINE": "1",
             }
         )
         return env
@@ -632,6 +635,8 @@ class OpenSandboxBackend:
                 f"mkdir -p {assets}/data {assets}/topics-qrels "
                 f"{assets}/indexes {assets}/models"
             ),
+            f"export HF_HOME={assets}/.cache/huggingface",
+            f"export HF_DATASETS_CACHE={assets}/.cache/datasets",
             (
                 f"if [ ! -f {role_data} ]; then "
                 f"cd {assets} && retry_cmd python -m scripts_build_index.decrypt_dataset "
