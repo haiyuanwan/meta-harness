@@ -542,20 +542,29 @@ class OpenSandboxBackend:
             raise ValueError("runtime role must be solver or grader")
         commands = [
             "set -euo pipefail",
-            "export DEBIAN_FRONTEND=noninteractive",
-            "apt-get update",
             (
-                "apt-get install -y --no-install-recommends "
+                "retry_cmd() { attempt=1; while ! \"$@\"; do "
+                "if [ \"$attempt\" -ge 5 ]; then return 1; fi; "
+                "sleep $((attempt * 2)); attempt=$((attempt + 1)); done; }"
+            ),
+            "export DEBIAN_FRONTEND=noninteractive",
+            "export HF_HUB_ENABLE_HF_TRANSFER=1",
+            "retry_cmd apt-get update",
+            (
+                "retry_cmd apt-get install -y --no-install-recommends "
                 "git ca-certificates curl build-essential"
             ),
             "rm -rf /var/lib/apt/lists/*",
             "mkdir -p /opt/meta-harness /opt/benchmark-assets",
             "tar -xzf /tmp/native-meta-source.tar.gz -C /opt",
-            "python -m pip install --no-cache-dir --upgrade pip",
-            "python -m pip install --no-cache-dir python-dotenv 'pydantic>=2'",
+            "retry_cmd python -m pip install --no-cache-dir --upgrade pip",
+            (
+                "retry_cmd python -m pip install --no-cache-dir "
+                "python-dotenv 'pydantic>=2'"
+            ),
         ]
         if role == "solver":
-            commands.append("python -m pip install --no-cache-dir litellm")
+            commands.append("retry_cmd python -m pip install --no-cache-dir litellm")
         if benchmark == "bfcl":
             commands.extend(self._bfcl_bootstrap_commands(role))
         else:
@@ -580,9 +589,12 @@ class OpenSandboxBackend:
                 f"git -C {gorilla_repo} remote add origin "
                 "https://github.com/ShishirPatil/gorilla.git"
             ),
-            f"git -C {gorilla_repo} fetch --depth 1 origin {revision}",
+            f"retry_cmd git -C {gorilla_repo} fetch --depth 1 origin {revision}",
             f"git -C {gorilla_repo} checkout --force {revision}",
-            f"python -m pip install --no-cache-dir -e {bfcl_repo} soundfile",
+            (
+                "retry_cmd python -m pip install --no-cache-dir "
+                f"-e {bfcl_repo} soundfile"
+            ),
         ]
         if role == "solver":
             commands.extend(
@@ -611,18 +623,18 @@ class OpenSandboxBackend:
         role_data = grader_data if role == "grader" else solver_data
         common = [
             (
-                "python -m pip install --no-cache-dir --no-deps "
+                "retry_cmd python -m pip install --no-cache-dir --no-deps "
                 "'git+https://github.com/lilacheden/BrowseComp-Plus/"
                 f"@{revision}'"
             ),
-            "python -m pip install --no-cache-dir 'datasets>=4.0.0'",
+            "retry_cmd python -m pip install --no-cache-dir 'datasets>=4.0.0'",
             (
                 f"mkdir -p {assets}/data {assets}/topics-qrels "
                 f"{assets}/indexes {assets}/models"
             ),
             (
                 f"if [ ! -f {role_data} ]; then "
-                f"cd {assets} && python -m scripts_build_index.decrypt_dataset "
+                f"cd {assets} && retry_cmd python -m scripts_build_index.decrypt_dataset "
                 f"--output {full_data} "
                 f"--generate-tsv {assets}/topics-qrels/queries.tsv && "
                 "python /opt/meta-harness/integrations/"
@@ -635,7 +647,7 @@ class OpenSandboxBackend:
         if role == "grader":
             return common + [
                 (
-                    "python -m pip install --no-cache-dir "
+                    "retry_cmd python -m pip install --no-cache-dir "
                     "litellm numpy openai tqdm"
                 ),
                 f"rm -f {full_data} {solver_data}",
@@ -644,43 +656,43 @@ class OpenSandboxBackend:
             ]
         return common + [
             (
-                "python -m pip install --no-cache-dir torch "
+                "retry_cmd python -m pip install --no-cache-dir torch "
                 "--index-url https://download.pytorch.org/whl/cpu"
             ),
             (
-                "python -m pip install --no-cache-dir "
+                "retry_cmd python -m pip install --no-cache-dir "
                 "'transformers>=4.53.2,<5' 'pillow>=12.1.1' "
                 "'peft>=0.16.0' safetensors faiss-cpu hf_transfer "
                 "huggingface_hub"
             ),
             (
-                "python -m pip install --no-cache-dir --no-deps "
+                "retry_cmd python -m pip install --no-cache-dir --no-deps "
                 "'git+https://github.com/texttron/tevatron.git"
                 f"@{tevatron_revision}'"
             ),
             (
                 f"if ! compgen -G '{index_dir}/corpus.shard*_of_4.pkl' "
                 "> /dev/null; then "
-                f"cd {assets}/indexes && HF_HUB_ENABLE_HF_TRANSFER=1 "
+                f"cd {assets}/indexes && retry_cmd "
                 "hf download Tevatron/browsecomp-plus-indexes "
                 "--repo-type=dataset --include='qwen3-embedding-8b/*' "
                 "--local-dir .; fi"
             ),
             (
                 f"if [ ! -f {model_dir}/config.json ]; then "
-                "HF_HUB_ENABLE_HF_TRANSFER=1 hf download "
+                "retry_cmd hf download "
                 f"Qwen/Qwen3-Embedding-8B --local-dir {model_dir}; fi"
             ),
             (
                 f"if [ ! -f {corpus_dir}/state.json ]; then "
-                "python -c \"from datasets import load_dataset; "
+                "retry_cmd python -c \"from datasets import load_dataset; "
                 "load_dataset('Tevatron/browsecomp-plus-corpus', "
                 f"split='train', cache_dir='{assets}/.cache/datasets')"
                 f".save_to_disk('{corpus_dir}')\"; fi"
             ),
             (
                 f"if [ ! -f {tokenizer_dir}/tokenizer_config.json ]; then "
-                "python -c \"from transformers import AutoTokenizer; "
+                "retry_cmd python -c \"from transformers import AutoTokenizer; "
                 "AutoTokenizer.from_pretrained('Qwen/Qwen3-0.6B', "
                 "cache_dir='/tmp/qwen-tokenizer-cache').save_pretrained("
                 f"'{tokenizer_dir}')\"; "
