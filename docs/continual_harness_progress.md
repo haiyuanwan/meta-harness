@@ -624,6 +624,10 @@ solver，也不因合法 score=0 重试。
   挂入 solver；grader 数据使用并只挂载 sibling `grader/` 目录；
 - runtime identity 同时绑定资产目录和固定 asset revision，避免切换挂载后静默复用
   不兼容 snapshot；
+- 当前 CPU FAISS/Qwen3-Embedding-8B 配置必须显式使用
+  `--opensandbox-memory 48Gi` 和 `--sandbox-tasks-per-worker 1`。实测 32 GiB
+  在完整 index/model/corpus 初始化时触及 cgroup 上限；48 GiB 下真实检索峰值约
+  41.2 GiB；
 - proposer 运行在独立 workspace，不能挂载 hidden manifest、hidden 数据、grader、私有分数和模型密钥；
 - hidden 评测在 checkpoint 副本上运行，其输出状态绝不写回主线。
 
@@ -674,14 +678,19 @@ run/
 2. `[完成]` OpenSandbox 使用有界 task chunk，solver worker 故障从 chunk 入口重试；
 3. `[完成]` deterministic candidate error 与可重试 model/backend error 已区分；
 4. `[完成]` solver/grader 双 snapshot、late artifact injection、grader failure
-   不重跑 solver，以及源码/答案隔离已有单元测试覆盖；真实 BFCL Harbor smoke
-   已验证正常 solver→state commit→separate verifier 顺序，kill 注入仍待专项测试。
+   不重跑 solver，以及源码/答案隔离已有单元测试覆盖；真实 BFCL 和
+   BrowseCompPlus Harbor smoke 已验证正常 solver→state commit→separate verifier
+   顺序，kill 注入仍待专项测试。
 
 ### Phase B：低成本 smoke
 
-1. `[BFCL 已完成，BrowseCompPlus 待运行]` 各取极少量 search/validation task；
-2. 只验证 H0 -> H1 -> H2 传递、逐 task resume 和隐藏目录隔离；
-3. 不把 smoke 分数作为正式实验结果。
+1. `[完成]` BFCL `multi_turn_base_0` 与 BrowseCompPlus task `8` 已使用当前四个
+   snapshot 完成 Sequential Harbor smoke；
+2. `[完成]` 同一 checkpoint 的 `session_count` 实测为 0 -> 1 -> 2，两个角色的
+   源码/答案目录与 Browse 只读挂载均做了 sandbox 内核验；
+3. smoke 分数不作为正式实验结果。此次 BFCL score=1；Browse 合法完成 grader
+   但 score=0，属于任务失败而不是基础设施失败，因此没有重试；Browse 使用 35 次
+   search、耗时约 28 分钟，确认正式实验吞吐主要受 CPU embedding 搜索次数影响。
 
 ### Phase C：正式五轮进化
 

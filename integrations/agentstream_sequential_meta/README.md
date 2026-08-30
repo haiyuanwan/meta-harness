@@ -69,9 +69,17 @@ python -m integrations.agentstream_sequential_meta.controller \
   --benchmarks bfcl,browsecompplus \
   --prepare-only \
   --execution-backend harbor \
+  --no-opensandbox-use-server-proxy \
+  --opensandbox-memory 48Gi \
   --opensandbox-runtime-mode auto \
   --env-file /mnt/public/users/wanhaiyuan/.secrets/jd-joyrouter.env
 ```
+
+The FAISS BrowseCompPlus solver must be run with at least 48 GiB in this CPU
+deployment. A full index/model/corpus load at 32 GiB reached the cgroup limit
+before there was safe inference headroom; a real search at 48 GiB peaked at
+about 41.2 GiB. Keep `--sandbox-tasks-per-worker 1` for BrowseCompPlus so a
+slow or retried task cannot consume the state or resources of a later task.
 
 Snapshot identities include the benchmark, runtime role, uploaded meta-harness
 source digest, base image, SDK versions, OpenSandbox server scope, and a
@@ -124,10 +132,21 @@ python -m integrations.agentstream_sequential_meta.controller \
   --seed 44 \
   --base-model anthropic/Claude-Opus-4.6-hq \
   --proposer-model Claude-Opus-4.6-hq \
-  --execution-backend opensandbox \
+  --execution-backend harbor \
+  --no-opensandbox-use-server-proxy \
+  --opensandbox-memory 48Gi \
+  --sandbox-tasks-per-worker 1 \
   --opensandbox-runtime-mode require \
   --env-file /mnt/public/users/wanhaiyuan/.secrets/jd-joyrouter.env
 ```
+
+This is a connectivity smoke, not a cheap accuracy run: the unmodified
+generation-zero harness can issue dozens of CPU Qwen3-Embedding-8B searches for
+one BrowseCompPlus task. The 2026-08-30 end-to-end check completed BFCL followed
+by BrowseCompPlus with separate verifiers and transferred the same checkpoint
+with `session_count` 0 -> 1 -> 2; the Browse task used 35 searches and took
+about 28 minutes. A legitimate score of zero is still a successful pipeline
+smoke and must not be treated as an infrastructure retry.
 
 Pass `--iterations 0` for the no-outer-evolution Sequential control. Use
 `--resume` with exactly the same experiment arguments after an interruption.
